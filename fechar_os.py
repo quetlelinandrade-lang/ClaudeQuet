@@ -2,14 +2,11 @@
 Automação: fecha OS com status "realizado" na plataforma Suporte Prime.
 
 Uso:
-    python fechar_os.py               # modo headless (sem janela)
-    python fechar_os.py --headful     # abre o navegador visível
-    python fechar_os.py --dry-run     # apenas lista as OS, sem alterar
+    python fechar_os.py            # abre navegador, você faz login, script assume
+    python fechar_os.py --dry-run  # apenas lista as OS, sem alterar
 
-Credenciais lidas do arquivo .env:
+A URL da plataforma é lida do arquivo .env:
     PLATFORM_URL=https://suporteprime.awo-soft.com
-    PLATFORM_EMAIL=seu@email.com
-    PLATFORM_PASSWORD=suasenha
 """
 
 import os
@@ -22,106 +19,50 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 load_dotenv()
 
 URL = os.environ.get("PLATFORM_URL", "https://suporteprime.awo-soft.com")
-EMAIL = os.environ.get("PLATFORM_EMAIL", "")
-PASSWORD = os.environ.get("PLATFORM_PASSWORD", "")
-
 PLANNING_PATH = "/work-orders/planning"
 
 
-def login(page) -> None:
-    print("  Fazendo login...")
+def aguardar_login(page) -> None:
+    print("\n  O navegador vai abrir a página de login.")
+    print("  Faça o login MANUALMENTE no navegador.")
+    print("  O script continuará automaticamente após o login.\n")
+
     page.goto(f"{URL}/login")
     page.wait_for_load_state("networkidle")
 
-    # Tenta preencher o campo de email com diferentes seletores
-    email_selectors = [
-        'input[type="email"]',
-        'input[name="email"]',
-        'input[placeholder*="mail" i]',
-        'input[placeholder*="usuário" i]',
-        'input[placeholder*="usuario" i]',
-        'input[placeholder*="login" i]',
-        'input:visible >> nth=0',
-    ]
-    for sel in email_selectors:
-        try:
-            page.fill(sel, EMAIL, timeout=3000)
-            print(f"    Campo email encontrado: {sel}")
-            break
-        except Exception:
-            continue
-    else:
-        raise RuntimeError("Campo de email não encontrado na página de login.")
+    # Aguarda até sair da página de login (máx. 3 minutos)
+    try:
+        page.wait_for_url(lambda u: "/login" not in u, timeout=180000)
+    except PlaywrightTimeout:
+        raise RuntimeError("Tempo esgotado. Faça o login em até 3 minutos.")
 
-    # Tenta preencher o campo de senha
-    password_selectors = [
-        'input[type="password"]',
-        'input[name="password"]',
-        'input[name="senha"]',
-        'input[placeholder*="senha" i]',
-        'input[placeholder*="password" i]',
-    ]
-    for sel in password_selectors:
-        try:
-            page.fill(sel, PASSWORD, timeout=3000)
-            print(f"    Campo senha encontrado: {sel}")
-            break
-        except Exception:
-            continue
-    else:
-        raise RuntimeError("Campo de senha não encontrado na página de login.")
-
-    # Tenta clicar no botão de login
-    submit_selectors = [
-        'button[type="submit"]',
-        'input[type="submit"]',
-        'button:has-text("Entrar")',
-        'button:has-text("Login")',
-        'button:has-text("Acessar")',
-        'button:has-text("Iniciar")',
-    ]
-    for sel in submit_selectors:
-        try:
-            page.click(sel, timeout=3000)
-            print(f"    Botão login clicado: {sel}")
-            break
-        except Exception:
-            continue
-
-    # Aguarda a página responder ao clique
-    time.sleep(3)
     page.wait_for_load_state("networkidle")
-    print(f"    URL após login: {page.url}")
-    page.screenshot(path="pos_login.png")
-    print("    Screenshot salvo em pos_login.png")
-
-    # Considera login bem-sucedido se a URL mudou para fora do /login
-    if "/login" in page.url:
-        raise RuntimeError(
-            "Login falhou. Veja o arquivo pos_login.png na pasta claudequet para diagnóstico."
-        )
-
-    print("  Login realizado com sucesso.")
+    print("  Login detectado! Continuando...\n")
 
 
 def buscar_os_realizadas(page) -> list[dict]:
-    """Retorna lista de dicts com {id, titulo, href} das OS com status 'realizado'."""
     print("  Acessando página de planejamento...")
     page.goto(f"{URL}{PLANNING_PATH}")
     page.wait_for_load_state("networkidle")
+    time.sleep(2)
 
     os_encontradas = []
+    vistos = set()
 
-    # Estratégia: procura cards/linhas que contenham o texto "realizado"
-    # Ajuste o seletor conforme a estrutura real do HTML da plataforma
     cards = page.locator("text=realizado").all()
+    print(f"  Elementos com 'realizado' encontrados: {len(cards)}")
 
     for card in cards:
         try:
-            # Tenta subir na árvore DOM para encontrar o elemento clicável (link ou linha)
-            linha = card.locator("xpath=ancestor::tr[1] | ancestor::a[1] | ancestor::div[contains(@class,'card')][1]").first
+            linha = card.locator(
+                "xpath=ancestor::tr[1] | ancestor::a[1] | ancestor::div[contains(@class,'card')][1]"
+            ).first
             href = linha.get_attribute("href") or ""
-            texto = linha.inner_text()[:80].strip().replace("\n", " ")
+            texto = linha.inner_text()[:120].strip().replace("\n", " ")
+            chave = href or texto[:40]
+            if chave in vistos:
+                continue
+            vistos.add(chave)
             os_encontradas.append({"elemento": linha, "texto": texto, "href": href})
         except Exception:
             continue
@@ -130,17 +71,15 @@ def buscar_os_realizadas(page) -> list[dict]:
 
 
 def fechar_os(page, os_item: dict, dry_run: bool) -> bool:
-    """Abre a OS, vai na aba 'tipo' e muda para 'fechado'. Retorna True se alterou."""
     texto = os_item["texto"]
     href = os_item["href"]
 
     if dry_run:
-        print(f"  [DRY RUN] OS encontrada: {texto[:60]}")
+        print(f"  [DRY RUN] OS encontrada: {texto[:70]}")
         return False
 
-    print(f"  Abrindo OS: {texto[:60]}...")
+    print(f"  Abrindo OS: {texto[:70]}...")
 
-    # Navega para a OS
     if href and href.startswith("http"):
         page.goto(href)
     elif href:
@@ -149,62 +88,98 @@ def fechar_os(page, os_item: dict, dry_run: bool) -> bool:
         try:
             os_item["elemento"].click()
         except Exception as exc:
-            print(f"    Não foi possível abrir a OS: {exc}")
+            print(f"    Não foi possível abrir: {exc}")
             return False
 
     page.wait_for_load_state("networkidle")
+    time.sleep(1)
 
     # Clica na aba "tipo"
-    try:
-        page.click("text=tipo", timeout=5000)
-        time.sleep(0.5)
-    except PlaywrightTimeout:
-        print("    Aba 'tipo' não encontrada.")
-        return False
-
-    # Seleciona "fechado" no campo disponível (select, botão ou radio)
-    try:
-        # Tenta como <select>
-        page.select_option("select", label="fechado", timeout=3000)
-    except Exception:
+    tipo_selectors = [
+        "text=Tipo",
+        "text=tipo",
+        '[data-tab*="tipo" i]',
+        'a:has-text("Tipo")',
+        'button:has-text("Tipo")',
+    ]
+    clicou_tipo = False
+    for sel in tipo_selectors:
         try:
-            # Tenta como botão ou opção clicável
-            page.click("text=fechado", timeout=3000)
-        except PlaywrightTimeout:
-            print("    Opção 'fechado' não encontrada.")
-            return False
+            page.click(sel, timeout=4000)
+            clicou_tipo = True
+            time.sleep(0.8)
+            break
+        except Exception:
+            continue
 
-    # Salva a alteração
-    try:
-        page.click('button:has-text("salvar"), button:has-text("Salvar"), button[type="submit"]', timeout=5000)
-        page.wait_for_load_state("networkidle")
-        print("    OS fechada com sucesso.")
-        return True
-    except PlaywrightTimeout:
-        print("    Botão de salvar não encontrado — verifique manualmente.")
+    if not clicou_tipo:
+        print("    Aba 'Tipo' não encontrada.")
+        page.screenshot(path=f"debug_tipo_{int(time.time())}.png")
         return False
+
+    # Seleciona "fechado"
+    fechado_selectors = [
+        ("select_option", "select", "fechado"),
+        ("select_option", "select", "Fechado"),
+        ("click", "text=Fechado", None),
+        ("click", "text=fechado", None),
+        ("click", '[value*="fechado" i]', None),
+    ]
+    selecionou = False
+    for tipo, sel, val in fechado_selectors:
+        try:
+            if tipo == "select_option":
+                page.select_option(sel, label=val, timeout=3000)
+            else:
+                page.click(sel, timeout=3000)
+            selecionou = True
+            break
+        except Exception:
+            continue
+
+    if not selecionou:
+        print("    Opção 'Fechado' não encontrada.")
+        page.screenshot(path=f"debug_fechado_{int(time.time())}.png")
+        return False
+
+    # Salva
+    salvar_selectors = [
+        'button:has-text("Guardar")',
+        'button:has-text("Salvar")',
+        'button:has-text("Gravar")',
+        'button:has-text("Confirmar")',
+        'button[type="submit"]',
+    ]
+    for sel in salvar_selectors:
+        try:
+            page.click(sel, timeout=4000)
+            page.wait_for_load_state("networkidle")
+            print("    OS fechada com sucesso.")
+            return True
+        except Exception:
+            continue
+
+    print("    Botão salvar não encontrado.")
+    return False
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fecha OS com status 'realizado'")
-    parser.add_argument("--headful", action="store_true", help="Abre o navegador visível")
     parser.add_argument("--dry-run", action="store_true", help="Apenas lista as OS, sem alterar")
     args = parser.parse_args()
 
-    if not EMAIL or not PASSWORD:
-        print("Erro: defina PLATFORM_EMAIL e PLATFORM_PASSWORD no arquivo .env")
-        sys.exit(1)
-
     modo = "DRY RUN — nenhuma alteração será feita" if args.dry_run else "modo real"
-    print(f"\n=== Fechamento de OS ({modo}) ===\n")
+    print(f"\n=== Fechamento de OS ({modo}) ===")
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not args.headful)
+        # Sempre abre o navegador visível para o usuário fazer login
+        browser = pw.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
 
         try:
-            login(page)
+            aguardar_login(page)
+
             os_list = buscar_os_realizadas(page)
 
             if not os_list:
@@ -215,15 +190,19 @@ def main() -> None:
                 for os_item in os_list:
                     if fechar_os(page, os_item, dry_run=args.dry_run):
                         fechadas += 1
-                    time.sleep(1)  # pausa entre requisições
+                    time.sleep(1)
 
                 if not args.dry_run:
                     print(f"\n  Concluído: {fechadas}/{len(os_list)} OS fechada(s).")
+                else:
+                    print(f"\n  Total encontrado: {len(os_list)} OS.")
 
         except RuntimeError as exc:
             print(f"\nErro: {exc}")
             sys.exit(1)
         finally:
+            print("\n  Pressione Enter para fechar o navegador...")
+            input()
             browser.close()
 
 
