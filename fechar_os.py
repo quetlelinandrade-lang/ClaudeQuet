@@ -49,21 +49,50 @@ def buscar_os_realizadas(page) -> list[dict]:
     os_encontradas = []
     vistos = set()
 
-    cards = page.locator("text=realizado").all()
-    print(f"  Elementos com 'realizado' encontrados: {len(cards)}")
+    elementos = page.locator("text=realizado").all()
+    print(f"  Elementos com 'realizado' encontrados: {len(elementos)}")
 
-    for card in cards:
+    for el in elementos:
         try:
-            linha = card.locator(
-                "xpath=ancestor::tr[1] | ancestor::a[1] | ancestor::div[contains(@class,'card')][1]"
-            ).first
-            href = linha.get_attribute("href") or ""
-            texto = linha.inner_text()[:120].strip().replace("\n", " ")
+            # Tenta subir até 8 níveis na árvore DOM procurando elemento clicável
+            href = ""
+            texto = ""
+            encontrou = False
+
+            for nivel in range(1, 9):
+                xpath = f"xpath=ancestor::*[{nivel}]"
+                try:
+                    pai = el.locator(xpath).first
+                    h = pai.get_attribute("href") or ""
+                    t = pai.inner_text()[:120].strip().replace("\n", " ")
+
+                    # Verifica se é um elemento clicável
+                    tag = pai.evaluate("el => el.tagName.toLowerCase()")
+                    tem_click = pai.get_attribute("onclick") is not None
+                    tem_cursor = "pointer" in (pai.evaluate("el => window.getComputedStyle(el).cursor") or "")
+
+                    if tag in ("a", "tr") or tem_click or tem_cursor or h:
+                        href = h
+                        texto = t
+                        encontrou = True
+                        break
+
+                    # Para quando o elemento ficou grande demais
+                    if len(t) > 300:
+                        break
+                except Exception:
+                    break
+
+            if not encontrou:
+                # Usa o próprio elemento se não achou ancestral clicável
+                texto = el.inner_text()[:120].strip().replace("\n", " ")
+                href = el.get_attribute("href") or ""
+
             chave = href or texto[:40]
-            if chave in vistos:
+            if chave in vistos or not texto:
                 continue
             vistos.add(chave)
-            os_encontradas.append({"elemento": linha, "texto": texto, "href": href})
+            os_encontradas.append({"elemento": el, "texto": texto, "href": href})
         except Exception:
             continue
 
