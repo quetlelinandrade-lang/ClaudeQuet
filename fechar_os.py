@@ -3,15 +3,15 @@ Automação: fecha OS com status "Realizado" do dia anterior.
 
 Fluxo:
   1. Abre o navegador — você faz login manualmente
-  2. Navega para o dia anterior na vista "Dia"
-  3. Abre cada OS do dia
+  2. Vai para Calendário > vista Dia > dia anterior
+  3. Clica em cada bloco de OS do dia
   4. Se Estado = "Realizado" → muda Tipo para "Fechado" → salva
-  5. Passa para a próxima
 
 Uso:
-    python fechar_os.py            # processa o dia anterior (padrão)
+    python fechar_os.py            # processa ontem (padrão)
     python fechar_os.py --dry-run  # só lista, sem alterar
-    python fechar_os.py --hoje     # processa o dia de hoje
+    python fechar_os.py --hoje     # processa hoje
+    python fechar_os.py --debug    # salva screenshot do calendário e sai
 """
 
 import os
@@ -28,253 +28,212 @@ URL = os.environ.get("PLATFORM_URL", "https://suporteprime.awo-soft.com")
 PLANNING_PATH = "/work-orders/planning"
 
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
 # Login
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
 
 def aguardar_login(page) -> None:
     print("\n  Abrindo página de login...")
     print("  Faça o login MANUALMENTE no navegador.")
     print("  O script continua sozinho após o login.\n")
-
     page.goto(f"{URL}/login")
     page.wait_for_load_state("networkidle")
-
     try:
         page.wait_for_url(lambda u: "/login" not in u, timeout=180000)
     except PlaywrightTimeout:
         raise RuntimeError("Tempo esgotado. Faça login em até 3 minutos.")
-
     page.wait_for_load_state("networkidle")
-    print("  Login detectado! Continuando...\n")
+    print("  Login OK!\n")
 
 
-# ---------------------------------------------------------------------------
-# Navegação no calendário
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
+# Navegação para o dia certo
+# ──────────────────────────────────────────────
 
-def ir_para_dia(page, alvo: date) -> None:
-    """Navega o calendário até a data alvo usando os botões < e >."""
-    print(f"  Acessando calendário...")
+def ir_para_dia_vista(page, alvo: date) -> None:
+    """Abre o calendário, ativa vista Dia e navega para a data alvo."""
+    print(f"  Abrindo calendário...")
     page.goto(f"{URL}{PLANNING_PATH}")
     page.wait_for_load_state("networkidle")
     time.sleep(2)
 
-    # Garante vista "Dia"
+    # Ativa vista "Dia"
+    for sel in ['button:has-text("Dia")', '[data-view="day"]', '.fc-dayGridDay-button']:
+        try:
+            page.click(sel, timeout=3000)
+            page.wait_for_load_state("networkidle")
+            time.sleep(1)
+            print("  Vista 'Dia' ativada.")
+            break
+        except Exception:
+            continue
+
+    # Clica o botão "Hoje" para garantir ponto de partida
     try:
-        page.click('button:has-text("Dia")', timeout=5000)
+        page.click('button:has-text("Hoje")', timeout=3000)
         page.wait_for_load_state("networkidle")
         time.sleep(1)
     except Exception:
         pass
 
+    # Navega para a data alvo clicando no botão <
     hoje = date.today()
-    delta = (alvo - hoje).days  # negativo = passado
+    passos = (hoje - alvo).days  # positivo = dias para trás
+    print(f"  Navegando {passos} dia(s) para trás...")
 
-    if delta == 0:
-        print(f"  Já está no dia {alvo.strftime('%d/%m/%Y')}.")
-        return
-
-    seta = "button:nth-of-type(1)" if delta < 0 else "button:nth-of-type(2)"
-
-    # Tenta encontrar os botões < e > pelo texto ou posição
-    for _ in range(abs(delta)):
+    for _ in range(passos):
         clicou = False
-        for sel in ['button:has-text("<")', '[aria-label*="anterior" i]', '[title*="anterior" i]']:
+        # Tenta botões < por texto, aria-label ou classe FC
+        for sel in [
+            'button:has-text("<")',
+            '[aria-label*="anterior" i]',
+            '[aria-label*="prev" i]',
+            '[title*="anterior" i]',
+            '.fc-prev-button',
+        ]:
             try:
-                if delta < 0:
-                    page.click(sel, timeout=2000)
-                    clicou = True
-                    break
+                page.click(sel, timeout=2000)
+                clicou = True
+                break
             except Exception:
                 continue
 
+        # Fallback: primeiro botão com símbolo de seta
         if not clicou:
-            # Fallback: primeiro botão de navegação visível
-            try:
-                botoes = page.locator("button").all()
-                for b in botoes:
+            botoes = page.locator("button").all()
+            for b in botoes[:10]:
+                try:
                     txt = (b.inner_text() or "").strip()
-                    if delta < 0 and txt in ("<", "‹", "←", "«"):
+                    if txt in ("<", "‹", "←", "«", "chevron_left", "‹"):
                         b.click()
                         clicou = True
                         break
-                    if delta > 0 and txt in (">", "›", "→", "»"):
-                        b.click()
-                        clicou = True
-                        break
-            except Exception:
-                pass
+                except Exception:
+                    continue
 
-        if not clicou:
-            # Último recurso: clica no primeiro/segundo botão da área de navegação
-            try:
-                idx = 0 if delta < 0 else 1
-                page.locator(".fc-prev-button, .fc-next-button, nav button").nth(idx).click(timeout=2000)
-            except Exception:
-                pass
+        time.sleep(0.4)
 
-        time.sleep(0.5)
-        page.wait_for_load_state("networkidle")
-
-    print(f"  Calendário em: {alvo.strftime('%d/%m/%Y')}")
+    page.wait_for_load_state("networkidle")
     time.sleep(1)
+    print(f"  Calendário em: {alvo.strftime('%d/%m/%Y')}\n")
 
 
-# ---------------------------------------------------------------------------
-# Coleta de OS do dia
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
+# Encontrar eventos do dia
+# ──────────────────────────────────────────────
 
-def coletar_links_os(page) -> list[str]:
-    """Retorna lista de URLs das OS via JavaScript — rápido."""
-    time.sleep(2)
-
-    # Usa JS para coletar todos os hrefs de uma vez (muito mais rápido)
-    hrefs = page.evaluate("""
+def descobrir_seletor_eventos(page) -> tuple[str, int]:
+    """Descobre qual seletor CSS corresponde aos blocos de OS no calendário."""
+    result = page.evaluate("""
         () => {
-            const links = Array.from(document.querySelectorAll('a[href]'));
-            const found = new Set();
-            links.forEach(a => {
-                const h = a.getAttribute('href') || '';
-                if (h.includes('work-order') || h.includes('ordem') || h.includes('/order')) {
-                    found.add(h);
-                }
-            });
-            return Array.from(found);
-        }
-    """)
-
-    print(f"  {len(hrefs)} links de OS encontrados.")
-    return hrefs
-
-
-def coletar_eventos_clicaveis(page) -> list[str]:
-    """Retorna lista de hrefs dos eventos via JavaScript."""
-    time.sleep(1)
-
-    # Tenta coletar via data attributes dos eventos do calendário
-    hrefs = page.evaluate("""
-        () => {
-            const seletores = [
+            const candidatos = [
+                '.fc-timegrid-event',
+                '.fc-event',
                 '[class*="fc-event"]',
+                '.fc-daygrid-event',
                 '[class*="event-item"]',
+                '[class*="event-block"]',
+                '[class*="work-order"]',
                 '[data-event-id]',
                 '[data-id]',
             ];
-            const found = new Set();
-            for (const sel of seletores) {
-                document.querySelectorAll(sel).forEach(el => {
-                    const href = el.getAttribute('href') || '';
-                    const id = el.getAttribute('data-id') || el.getAttribute('data-event-id') || '';
-                    if (href) found.add(href);
-                    else if (id) found.add(id);
-                });
+            for (const sel of candidatos) {
+                const n = document.querySelectorAll(sel).length;
+                if (n > 0) return {sel, n};
             }
-            return Array.from(found);
+            return {sel: null, n: 0};
         }
     """)
-
-    # Se não achou hrefs, retorna os índices para clicar pelo índice
-    if not hrefs:
-        count = page.evaluate("""
-            () => {
-                const sels = ['[class*="fc-event"]','[class*="event-item"]','[data-event-id]'];
-                for (const s of sels) {
-                    const els = document.querySelectorAll(s);
-                    if (els.length > 0) return els.length;
-                }
-                return 0;
-            }
-        """)
-        print(f"  {count} eventos encontrados (sem href, usando índice).")
-        return [f"__index__{i}" for i in range(count)]
-
-    print(f"  {len(hrefs)} eventos encontrados.")
-    return hrefs
+    sel = result.get("sel") or ""
+    n   = result.get("n") or 0
+    return sel, n
 
 
-# ---------------------------------------------------------------------------
-# Processamento de cada OS
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
+# Leitura e edição da OS
+# ──────────────────────────────────────────────
 
 def ler_estado(page) -> str:
-    """Lê o valor atual do campo Estado."""
-    seletores = [
-        'select[name*="estado" i]',
-        'select[id*="estado" i]',
-        'select:near(:text("Estado"))',
-    ]
-    for sel in seletores:
+    """Lê o valor do campo Estado na ficha da OS."""
+    # Tenta via select com nome/id "estado"
+    for sel in ['select[name*="estado" i]', 'select[id*="estado" i]']:
         try:
-            val = page.locator(sel).first.input_value(timeout=3000)
-            return val
+            return page.locator(sel).first.input_value(timeout=3000)
         except Exception:
             continue
 
-    # Tenta pelo texto visível do select
+    # Tenta via label "Estado" → select irmão
     try:
-        labels = page.locator("label").all()
-        for label in labels:
-            if "estado" in (label.inner_text() or "").lower():
-                for_id = label.get_attribute("for") or ""
-                if for_id:
-                    val = page.locator(f"#{for_id}").input_value(timeout=2000)
-                    return val
+        labels = page.evaluate("""
+            () => {
+                return Array.from(document.querySelectorAll('label')).map(l => ({
+                    text: l.textContent.trim(),
+                    for: l.getAttribute('for') || ''
+                }));
+            }
+        """)
+        for lbl in labels:
+            if "estado" in lbl["text"].lower() and lbl["for"]:
+                try:
+                    return page.locator(f'#{lbl["for"]}').input_value(timeout=2000)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Lê o texto visível do primeiro select que contenha "realizado" ou "não realizado"
+    try:
+        selects = page.locator("select").all()
+        for s in selects:
+            txt = s.input_value(timeout=1000)
+            if txt and ("realiz" in txt.lower() or "não realiz" in txt.lower()):
+                return txt
     except Exception:
         pass
 
     return ""
 
 
-def alterar_tipo_para_fechado(page) -> bool:
-    """Altera o campo Tipo para 'Fechado'. Retorna True se conseguiu."""
-    seletores_tipo = [
-        'select[name*="tipo" i]',
-        'select[id*="tipo" i]',
-    ]
-
-    # Tenta via seletor direto
-    for sel in seletores_tipo:
-        for valor in ["Fechado", "fechado", "FECHADO"]:
+def alterar_tipo_fechado(page) -> bool:
+    """Muda o campo Tipo para 'Fechado'. Retorna True se conseguiu."""
+    for sel in ['select[name*="tipo" i]', 'select[id*="tipo" i]']:
+        for val in ["Fechado", "fechado", "FECHADO"]:
             try:
-                page.select_option(sel, label=valor, timeout=3000)
-                print("    Campo Tipo → Fechado")
+                page.select_option(sel, label=val, timeout=3000)
                 return True
             except Exception:
                 try:
-                    page.select_option(sel, value=valor, timeout=2000)
-                    print("    Campo Tipo → Fechado")
+                    page.select_option(sel, value=val, timeout=1000)
                     return True
                 except Exception:
                     continue
 
-    # Tenta pelo label na página
+    # Fallback via label
     try:
-        labels = page.locator("label").all()
-        for label in labels:
-            if "tipo" in (label.inner_text() or "").lower():
-                for_id = label.get_attribute("for") or ""
-                if for_id:
-                    for valor in ["Fechado", "fechado", "FECHADO"]:
-                        try:
-                            page.select_option(f"#{for_id}", label=valor, timeout=2000)
-                            print("    Campo Tipo → Fechado")
-                            return True
-                        except Exception:
-                            continue
+        labels = page.evaluate("""
+            () => Array.from(document.querySelectorAll('label')).map(l => ({
+                text: l.textContent.trim(),
+                for: l.getAttribute('for') || ''
+            }))
+        """)
+        for lbl in labels:
+            if "tipo" in lbl["text"].lower() and lbl["for"]:
+                for val in ["Fechado", "fechado", "FECHADO"]:
+                    try:
+                        page.select_option(f'#{lbl["for"]}', label=val, timeout=2000)
+                        return True
+                    except Exception:
+                        continue
     except Exception:
         pass
-
     return False
 
 
-def salvar_os(page) -> bool:
-    """Clica no botão de salvar. Retorna True se encontrou."""
+def salvar(page) -> bool:
     for sel in [
         'button:has-text("Guardar")',
         'button:has-text("Salvar")',
         'button:has-text("Gravar")',
-        'button:has-text("Confirmar")',
         'button[type="submit"]',
     ]:
         try:
@@ -287,189 +246,121 @@ def salvar_os(page) -> bool:
     return False
 
 
-def processar_os_apos_clique(page, dry_run: bool, url_calendario: str) -> str:
-    """Processa a OS já aberta (após clique). Volta ao calendário no final."""
-    if "/login" in page.url:
-        return "erro"
+# ──────────────────────────────────────────────
+# Processamento de cada OS
+# ──────────────────────────────────────────────
 
-    estado = ler_estado(page)
-    titulo = page.title() or page.url
-
-    if "realizado" not in estado.lower() and "realizada" not in estado.lower():
-        print(f"    [{estado or '---'}] {titulo[:50]} — ignorada")
-        page.go_back()
-        page.wait_for_load_state("networkidle")
-        time.sleep(1)
-        return "ignorada"
-
-    print(f"    [Realizado] {titulo[:50]}")
-
-    if dry_run:
-        page.go_back()
-        page.wait_for_load_state("networkidle")
-        return "ignorada"
-
-    if not alterar_tipo_para_fechado(page):
-        print("    Campo Tipo não encontrado.")
-        page.screenshot(path=f"debug_tipo_{int(time.time())}.png")
-        page.go_back()
-        page.wait_for_load_state("networkidle")
-        return "erro"
-
-    if not salvar_os(page):
-        print("    Botão salvar não encontrado.")
-        page.go_back()
-        page.wait_for_load_state("networkidle")
-        return "erro"
-
-    print("    OS fechada com sucesso!")
-    page.goto(url_calendario)
-    page.wait_for_load_state("networkidle")
-    time.sleep(2)
-    return "fechada"
-
-
-def processar_os_por_url(page, url: str, dry_run: bool) -> str:
+def processar_os(page, seletor_evento: str, idx: int,
+                 url_calendario: str, dry_run: bool) -> str:
     """
-    Abre uma OS pela URL, verifica Estado e fecha se necessário.
-    Retorna: 'fechada', 'ignorada', 'erro'
+    Clica no evento de índice idx, verifica Estado e fecha se necessário.
+    Retorna: 'fechada' | 'ignorada' | 'erro'
     """
-    full_url = url if url.startswith("http") else f"{URL}{url}"
-    page.goto(full_url)
-    page.wait_for_load_state("networkidle")
-    time.sleep(1)
-
-    estado = ler_estado(page)
-    titulo = page.title() or full_url
-
-    if "realizado" not in estado.lower() and "realizada" not in estado.lower():
-        print(f"    [{estado or 'sem estado'}] {titulo[:50]} — ignorada")
-        return "ignorada"
-
-    print(f"    [Realizado] {titulo[:50]}")
-
-    if dry_run:
-        return "ignorada"
-
-    # Altera Tipo para Fechado
-    if not alterar_tipo_para_fechado(page):
-        print("    Não encontrou campo Tipo. Screenshot salvo.")
-        page.screenshot(path=f"debug_tipo_{int(time.time())}.png")
-        return "erro"
-
-    if not salvar_os(page):
-        print("    Botão salvar não encontrado.")
-        return "erro"
-
-    print("    OS fechada com sucesso!")
-    return "fechada"
-
-
-def processar_os_por_click(page, evento, dry_run: bool, url_calendario: str) -> str:
-    """
-    Clica em um evento do calendário, verifica Estado e fecha se necessário.
-    """
+    # Re-seleciona o evento (DOM pode ter mudado após navegação)
     try:
+        evento = page.locator(seletor_evento).nth(idx)
+        texto_evento = (evento.inner_text() or "").strip().replace("\n", " ")[:60]
         evento.click(timeout=5000)
         page.wait_for_load_state("networkidle")
         time.sleep(1)
     except Exception as e:
+        print(f"    [ERRO] não conseguiu clicar no evento {idx}: {e}")
         return "erro"
 
     if "/login" in page.url:
         return "erro"
 
     estado = ler_estado(page)
-    titulo = page.title() or page.url
+    titulo = texto_evento or page.title()[:50]
 
-    if "realizado" not in estado.lower() and "realizada" not in estado.lower():
-        print(f"    [{estado or 'sem estado'}] {titulo[:50]} — ignorada")
-        page.go_back()
+    if "realiz" not in estado.lower():
+        print(f"    [{estado or '---'}] {titulo} — ignorada")
+        page.goto(url_calendario)
         page.wait_for_load_state("networkidle")
-        time.sleep(1)
+        time.sleep(2)
         return "ignorada"
 
-    print(f"    [Realizado] {titulo[:50]}")
+    print(f"    [Realizado] {titulo}")
 
     if dry_run:
-        page.go_back()
+        page.goto(url_calendario)
         page.wait_for_load_state("networkidle")
+        time.sleep(2)
         return "ignorada"
 
-    if not alterar_tipo_para_fechado(page):
-        print("    Não encontrou campo Tipo. Screenshot salvo.")
-        page.screenshot(path=f"debug_tipo_{int(time.time())}.png")
-        page.go_back()
+    if not alterar_tipo_fechado(page):
+        print(f"    AVISO: campo Tipo não encontrado — screenshot salvo")
+        page.screenshot(path=f"debug_{int(time.time())}.png")
+        page.goto(url_calendario)
         page.wait_for_load_state("networkidle")
+        time.sleep(2)
         return "erro"
 
-    if not salvar_os(page):
-        print("    Botão salvar não encontrado.")
-        page.go_back()
+    if not salvar(page):
+        print(f"    AVISO: botão salvar não encontrado")
+        page.goto(url_calendario)
         page.wait_for_load_state("networkidle")
+        time.sleep(2)
         return "erro"
 
-    print("    OS fechada com sucesso!")
-    # Volta ao calendário
+    print(f"    ✓ Fechada!")
     page.goto(url_calendario)
     page.wait_for_load_state("networkidle")
     time.sleep(2)
     return "fechada"
 
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
 # Main
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fecha OS 'Realizado' do dia anterior")
-    parser.add_argument("--dry-run", action="store_true", help="Apenas lista, sem alterar")
-    parser.add_argument("--hoje", action="store_true", help="Processa o dia de hoje")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true", help="Lista sem alterar")
+    parser.add_argument("--hoje",    action="store_true", help="Processa hoje")
+    parser.add_argument("--debug",   action="store_true", help="Salva screenshot do calendário e sai")
     args = parser.parse_args()
 
-    alvo = date.today() if args.hoje else date.today() - timedelta(days=1)
+    alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
     label = alvo.strftime("%d/%m/%Y")
-    modo = "DRY RUN" if args.dry_run else "modo real"
+    modo  = "DRY RUN" if args.dry_run else "modo real"
 
     print(f"\n=== Fechamento de OS — {label} ({modo}) ===")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
+        page    = browser.new_page()
 
         try:
             aguardar_login(page)
-            ir_para_dia(page, alvo)
+            ir_para_dia_vista(page, alvo)
 
             url_calendario = page.url
 
-            # Tenta primeiro coletar links diretos das OS
-            links = coletar_links_os(page)
+            # Modo debug: salva screenshot e sai
+            if args.debug:
+                fname = f"debug_calendario_{alvo.strftime('%Y%m%d')}.png"
+                page.screenshot(path=fname, full_page=True)
+                sel, n = descobrir_seletor_eventos(page)
+                print(f"  Screenshot salvo: {fname}")
+                print(f"  Seletor eventos: '{sel}' ({n} encontrados)")
+                return
 
-            fechadas = erros = ignoradas = 0
+            sel, total = descobrir_seletor_eventos(page)
 
-            if links:
-                print(f"\n  Processando {len(links)} OS...\n")
-                for link in links:
-                    if link.startswith("__index__"):
-                        idx = int(link.replace("__index__", ""))
-                        seletores_ev = ['[class*="fc-event"]', '[class*="event-item"]', '[data-event-id]']
-                        clicou = False
-                        for sel in seletores_ev:
-                            try:
-                                page.locator(sel).nth(idx).click(timeout=3000)
-                                page.wait_for_load_state("networkidle")
-                                clicou = True
-                                break
-                            except Exception:
-                                continue
-                        if not clicou:
-                            ignoradas += 1
-                            continue
-                        resultado = processar_os_apos_clique(page, args.dry_run, url_calendario)
-                    else:
-                        resultado = processar_os_por_url(page, link, dry_run=args.dry_run)
+            if not sel or total == 0:
+                # Salva screenshot para diagnóstico
+                page.screenshot(path="debug_sem_eventos.png")
+                print(f"  Nenhum evento encontrado em {label}.")
+                print(f"  Screenshot salvo: debug_sem_eventos.png")
+            else:
+                print(f"  {total} OS encontradas em {label}. Processando...\n")
+                fechadas = ignoradas = erros = 0
+
+                for i in range(total):
+                    resultado = processar_os(page, sel, 0, url_calendario, args.dry_run)
+                    # Sempre usa índice 0 pois após voltar ao calendário
+                    # as OS já processadas são ignoradas pelo Estado
 
                     if resultado == "fechada":
                         fechadas += 1
@@ -477,15 +368,18 @@ def main() -> None:
                         erros += 1
                     else:
                         ignoradas += 1
-                    time.sleep(0.5)
-            else:
-                print(f"\n  Nenhuma OS encontrada em {label}.")
 
-            print(f"\n  Resumo {label}:")
-            print(f"    Fechadas:  {fechadas}")
-            print(f"    Ignoradas: {ignoradas} (Estado ≠ Realizado)")
-            if erros:
-                print(f"    Erros:     {erros} (verifique screenshots debug_*.png)")
+                    # Re-conta eventos restantes
+                    _, restantes = descobrir_seletor_eventos(page)
+                    if restantes == 0:
+                        break
+                    time.sleep(0.3)
+
+                print(f"\n  ── Resumo {label} ──")
+                print(f"  Fechadas:  {fechadas}")
+                print(f"  Ignoradas: {ignoradas}")
+                if erros:
+                    print(f"  Erros:     {erros} (veja debug_*.png)")
 
         except RuntimeError as exc:
             print(f"\nErro: {exc}")
