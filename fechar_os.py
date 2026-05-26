@@ -122,31 +122,26 @@ def ir_para_dia_vista(page, alvo: date) -> None:
 # Encontrar eventos do dia
 # ──────────────────────────────────────────────
 
-def descobrir_seletor_eventos(page) -> tuple[str, int]:
-    """Descobre qual seletor CSS corresponde aos blocos de OS no calendário."""
-    result = page.evaluate("""
-        () => {
-            const candidatos = [
-                '.fc-timegrid-event',
-                '.fc-event',
-                '[class*="fc-event"]',
-                '.fc-daygrid-event',
-                '[class*="event-item"]',
-                '[class*="event-block"]',
-                '[class*="work-order"]',
-                '[data-event-id]',
-                '[data-id]',
-            ];
-            for (const sel of candidatos) {
-                const n = document.querySelectorAll(sel).length;
-                if (n > 0) return {sel, n};
-            }
-            return {sel: null, n: 0};
-        }
+def extrair_urls_eventos(page, seletor: str) -> list[dict]:
+    """Extrai href e texto de todos os eventos via JavaScript antes de processar."""
+    dados = page.evaluate(f"""
+        () => {{
+            const eventos = Array.from(document.querySelectorAll('{seletor}'));
+            const vistos = new Set();
+            const resultado = [];
+            eventos.forEach(e => {{
+                // Procura <a> dentro do evento ou o próprio elemento se for <a>
+                const a = e.tagName === 'A' ? e : e.querySelector('a[href]');
+                const href = a ? (a.getAttribute('href') || '') : '';
+                if (!href || vistos.has(href)) return;
+                vistos.add(href);
+                const texto = e.textContent.trim().replace(/\\s+/g, ' ').substring(0, 80);
+                resultado.push({{ href, texto }});
+            }});
+            return resultado;
+        }}
     """)
-    sel = result.get("sel") or ""
-    n   = result.get("n") or 0
-    return sel, n
+    return dados or []
 
 
 # ──────────────────────────────────────────────
@@ -250,63 +245,46 @@ def salvar(page) -> bool:
 # Processamento de cada OS
 # ──────────────────────────────────────────────
 
-def processar_os(page, seletor_evento: str, idx: int,
-                 url_calendario: str, dry_run: bool) -> str:
+def processar_os(page, url: str, texto: str, dry_run: bool) -> str:
     """
-    Clica no evento de índice idx, verifica Estado e fecha se necessário.
+    Navega diretamente para a OS pela URL, verifica Estado e fecha se necessário.
     Retorna: 'fechada' | 'ignorada' | 'erro'
     """
-    # Re-seleciona o evento (DOM pode ter mudado após navegação)
+    full_url = url if url.startswith("http") else f"{URL}{url}"
+    titulo = texto[:60] or url
+
     try:
-        evento = page.locator(seletor_evento).nth(idx)
-        texto_evento = (evento.inner_text() or "").strip().replace("\n", " ")[:60]
-        evento.click(timeout=5000)
+        page.goto(full_url)
         page.wait_for_load_state("networkidle")
         time.sleep(1)
     except Exception as e:
-        print(f"    [ERRO] não conseguiu clicar no evento {idx}: {e}")
+        print(f"    [ERRO] {titulo}: {e}")
         return "erro"
 
     if "/login" in page.url:
         return "erro"
 
     estado = ler_estado(page)
-    titulo = texto_evento or page.title()[:50]
 
     if "realiz" not in estado.lower():
         print(f"    [{estado or '---'}] {titulo} — ignorada")
-        page.goto(url_calendario)
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
         return "ignorada"
 
     print(f"    [Realizado] {titulo}")
 
     if dry_run:
-        page.goto(url_calendario)
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
         return "ignorada"
 
     if not alterar_tipo_fechado(page):
         print(f"    AVISO: campo Tipo não encontrado — screenshot salvo")
         page.screenshot(path=f"debug_{int(time.time())}.png")
-        page.goto(url_calendario)
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
         return "erro"
 
     if not salvar(page):
         print(f"    AVISO: botão salvar não encontrado")
-        page.goto(url_calendario)
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
         return "erro"
 
-    print(f"    ✓ Fechada!")
-    page.goto(url_calendario)
-    page.wait_for_load_state("networkidle")
-    time.sleep(2)
+    print(f"    Fechada!")
     return "fechada"
 
 
@@ -346,40 +324,47 @@ def main() -> None:
                 print(f"  Seletor eventos: '{sel}' ({n} encontrados)")
                 return
 
-            sel, total = descobrir_seletor_eventos(page)
+            # Descobre seletor e extrai todos os URLs dos eventos de uma vez
+            result = page.evaluate("""
+                () => {
+                    const candidatos = ['.fc-timegrid-event','.fc-event','[class*="fc-event"]'];
+                    for (const sel of candidatos) {
+                        if (document.querySelectorAll(sel).length > 0) return sel;
+                    }
+                    return null;
+                }
+            """)
 
-            if not sel or total == 0:
-                # Salva screenshot para diagnóstico
+            if not result:
                 page.screenshot(path="debug_sem_eventos.png")
                 print(f"  Nenhum evento encontrado em {label}.")
                 print(f"  Screenshot salvo: debug_sem_eventos.png")
             else:
-                print(f"  {total} OS encontradas em {label}. Processando...\n")
-                fechadas = ignoradas = erros = 0
+                eventos = extrair_urls_eventos(page, result)
 
-                for i in range(total):
-                    resultado = processar_os(page, sel, 0, url_calendario, args.dry_run)
-                    # Sempre usa índice 0 pois após voltar ao calendário
-                    # as OS já processadas são ignoradas pelo Estado
+                if not eventos:
+                    print(f"  Eventos encontrados mas sem URLs navegáveis.")
+                    print(f"  Verifique debug_calendario_*.png")
+                else:
+                    print(f"  {len(eventos)} OS com URL encontradas em {label}. Processando...\n")
+                    fechadas = ignoradas = erros = 0
 
-                    if resultado == "fechada":
-                        fechadas += 1
-                    elif resultado == "erro":
-                        erros += 1
-                    else:
-                        ignoradas += 1
+                    for ev in eventos:
+                        resultado = processar_os(page, ev["href"], ev["texto"], args.dry_run)
+                        if resultado == "fechada":
+                            fechadas += 1
+                        elif resultado == "erro":
+                            erros += 1
+                        else:
+                            ignoradas += 1
+                        time.sleep(0.5)
 
-                    # Re-conta eventos restantes
-                    _, restantes = descobrir_seletor_eventos(page)
-                    if restantes == 0:
-                        break
-                    time.sleep(0.3)
-
-                print(f"\n  ── Resumo {label} ──")
-                print(f"  Fechadas:  {fechadas}")
-                print(f"  Ignoradas: {ignoradas}")
-                if erros:
-                    print(f"  Erros:     {erros} (veja debug_*.png)")
+                    print(f"\n  ── Resumo {label} ──")
+                    print(f"  Total processadas: {len(eventos)}")
+                    print(f"  Fechadas:          {fechadas}")
+                    print(f"  Ignoradas:         {ignoradas} (Estado != Realizado)")
+                    if erros:
+                        print(f"  Erros:             {erros} (veja debug_*.png)")
 
         except RuntimeError as exc:
             print(f"\nErro: {exc}")
