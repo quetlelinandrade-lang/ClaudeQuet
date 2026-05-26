@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import argparse
+from datetime import date, timedelta
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -40,11 +41,54 @@ def aguardar_login(page) -> None:
     print("  Login detectado! Continuando...\n")
 
 
-def buscar_os_realizadas(page) -> list[dict]:
-    print("  Acessando página de planejamento...")
+def navegar_dia_anterior(page) -> None:
+    """Clica na seta < para ir ao dia anterior no calendário."""
+    try:
+        page.click('button:has-text("<"), [aria-label*="anterior" i], [aria-label*="prev" i], [title*="anterior" i]', timeout=3000)
+        time.sleep(1)
+        page.wait_for_load_state("networkidle")
+        return
+    except Exception:
+        pass
+
+    # Fallback: procura a seta esquerda genérica
+    try:
+        setas = page.locator("button").all()
+        for s in setas:
+            txt = (s.inner_text() or "").strip()
+            if txt in ("<", "‹", "←", "Anterior", "Previous"):
+                s.click()
+                time.sleep(1)
+                page.wait_for_load_state("networkidle")
+                return
+    except Exception:
+        pass
+
+    print("  Aviso: não foi possível navegar ao dia anterior automaticamente.")
+
+
+def buscar_os_realizadas(page, dia_anterior: bool = True) -> list[dict]:
+    ontem = date.today() - timedelta(days=1)
+    label_dia = ontem.strftime("%d/%m/%Y")
+
+    print(f"  Acessando página de planejamento (buscando OS de {label_dia})...")
     page.goto(f"{URL}{PLANNING_PATH}")
     page.wait_for_load_state("networkidle")
     time.sleep(2)
+
+    # Garante vista de Dia (não semana/mês)
+    try:
+        page.click('button:has-text("Dia")', timeout=3000)
+        time.sleep(1)
+        page.wait_for_load_state("networkidle")
+    except Exception:
+        pass
+
+    if dia_anterior:
+        navegar_dia_anterior(page)
+        print(f"  Calendário navegado para o dia anterior ({label_dia}).")
+
+    time.sleep(1)
 
     os_encontradas = []
     vistos = set()
@@ -193,15 +237,20 @@ def fechar_os(page, os_item: dict, dry_run: bool) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fecha OS com status 'realizado'")
+    ontem = date.today() - timedelta(days=1)
+
+    parser = argparse.ArgumentParser(description="Fecha OS com status 'realizado' do dia anterior")
     parser.add_argument("--dry-run", action="store_true", help="Apenas lista as OS, sem alterar")
+    parser.add_argument("--hoje", action="store_true", help="Busca no dia de hoje em vez do dia anterior")
     args = parser.parse_args()
 
+    dia_anterior = not args.hoje
+    label_data = ontem.strftime("%d/%m/%Y") if dia_anterior else date.today().strftime("%d/%m/%Y")
     modo = "DRY RUN — nenhuma alteração será feita" if args.dry_run else "modo real"
-    print(f"\n=== Fechamento de OS ({modo}) ===")
+
+    print(f"\n=== Fechamento de OS — {label_data} ({modo}) ===")
 
     with sync_playwright() as pw:
-        # Sempre abre o navegador visível para o usuário fazer login
         browser = pw.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
@@ -209,12 +258,12 @@ def main() -> None:
         try:
             aguardar_login(page)
 
-            os_list = buscar_os_realizadas(page)
+            os_list = buscar_os_realizadas(page, dia_anterior=dia_anterior)
 
             if not os_list:
-                print("  Nenhuma OS com status 'realizado' encontrada.")
+                print(f"  Nenhuma OS com status 'realizado' encontrada em {label_data}.")
             else:
-                print(f"  {len(os_list)} OS encontrada(s) com status 'realizado'.\n")
+                print(f"  {len(os_list)} OS encontrada(s) com status 'realizado' em {label_data}.\n")
                 fechadas = 0
                 for os_item in os_list:
                     if fechar_os(page, os_item, dry_run=args.dry_run):
