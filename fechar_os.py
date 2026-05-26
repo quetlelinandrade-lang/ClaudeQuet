@@ -33,9 +33,44 @@ def login(page) -> None:
     page.goto(f"{URL}/login")
     page.wait_for_load_state("networkidle")
 
-    # Preenche email e senha — ajuste os seletores se necessário
-    page.fill('input[type="email"], input[name="email"]', EMAIL)
-    page.fill('input[type="password"], input[name="password"]', PASSWORD)
+    # Tenta preencher o campo de email com diferentes seletores
+    email_selectors = [
+        'input[type="email"]',
+        'input[name="email"]',
+        'input[placeholder*="mail" i]',
+        'input[placeholder*="usuário" i]',
+        'input[placeholder*="usuario" i]',
+        'input[placeholder*="login" i]',
+        'input:visible >> nth=0',
+    ]
+    for sel in email_selectors:
+        try:
+            page.fill(sel, EMAIL, timeout=3000)
+            print(f"    Campo email encontrado: {sel}")
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError("Campo de email não encontrado na página de login.")
+
+    # Tenta preencher o campo de senha
+    password_selectors = [
+        'input[type="password"]',
+        'input[name="password"]',
+        'input[name="senha"]',
+        'input[placeholder*="senha" i]',
+        'input[placeholder*="password" i]',
+    ]
+    for sel in password_selectors:
+        try:
+            page.fill(sel, PASSWORD, timeout=3000)
+            print(f"    Campo senha encontrado: {sel}")
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError("Campo de senha não encontrado na página de login.")
+
     page.click('button[type="submit"]')
 
     page.wait_for_load_state("networkidle")
