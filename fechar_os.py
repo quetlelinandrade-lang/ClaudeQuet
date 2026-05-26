@@ -126,55 +126,71 @@ def ir_para_dia(page, alvo: date) -> None:
 # ---------------------------------------------------------------------------
 
 def coletar_links_os(page) -> list[str]:
-    """Retorna lista de URLs das OS visíveis no dia atual do calendário."""
+    """Retorna lista de URLs das OS via JavaScript — rápido."""
     time.sleep(2)
 
-    hrefs = set()
+    # Usa JS para coletar todos os hrefs de uma vez (muito mais rápido)
+    hrefs = page.evaluate("""
+        () => {
+            const links = Array.from(document.querySelectorAll('a[href]'));
+            const found = new Set();
+            links.forEach(a => {
+                const h = a.getAttribute('href') || '';
+                if (h.includes('work-order') || h.includes('ordem') || h.includes('/order')) {
+                    found.add(h);
+                }
+            });
+            return Array.from(found);
+        }
+    """)
 
-    # Busca todos os elementos clicáveis dentro do calendário
-    # Os eventos são divs/links coloridos com texto do cliente
-    candidatos = page.locator("a[href*='work-order'], a[href*='ordem'], div[data-event], [class*='event'], [class*='fc-event']").all()
+    print(f"  {len(hrefs)} links de OS encontrados.")
+    return hrefs
 
-    for c in candidatos:
-        try:
-            h = c.get_attribute("href") or ""
-            if h and h not in hrefs:
-                hrefs.add(h)
-        except Exception:
-            continue
 
-    # Fallback: pega todos os links com /work-order ou /ordem na URL
+def coletar_eventos_clicaveis(page) -> list[str]:
+    """Retorna lista de hrefs dos eventos via JavaScript."""
+    time.sleep(1)
+
+    # Tenta coletar via data attributes dos eventos do calendário
+    hrefs = page.evaluate("""
+        () => {
+            const seletores = [
+                '[class*="fc-event"]',
+                '[class*="event-item"]',
+                '[data-event-id]',
+                '[data-id]',
+            ];
+            const found = new Set();
+            for (const sel of seletores) {
+                document.querySelectorAll(sel).forEach(el => {
+                    const href = el.getAttribute('href') || '';
+                    const id = el.getAttribute('data-id') || el.getAttribute('data-event-id') || '';
+                    if (href) found.add(href);
+                    else if (id) found.add(id);
+                });
+            }
+            return Array.from(found);
+        }
+    """)
+
+    # Se não achou hrefs, retorna os índices para clicar pelo índice
     if not hrefs:
-        todos = page.locator("a").all()
-        for a in todos:
-            try:
-                h = a.get_attribute("href") or ""
-                if "work-order" in h or "ordem" in h or "order" in h:
-                    hrefs.add(h)
-            except Exception:
-                continue
+        count = page.evaluate("""
+            () => {
+                const sels = ['[class*="fc-event"]','[class*="event-item"]','[data-event-id]'];
+                for (const s of sels) {
+                    const els = document.querySelectorAll(s);
+                    if (els.length > 0) return els.length;
+                }
+                return 0;
+            }
+        """)
+        print(f"  {count} eventos encontrados (sem href, usando índice).")
+        return [f"__index__{i}" for i in range(count)]
 
-    print(f"  {len(hrefs)} OS encontradas no calendário.")
-    return list(hrefs)
-
-
-def coletar_eventos_clicaveis(page) -> list:
-    """Retorna locators dos blocos de evento no calendário (para clicar)."""
-    time.sleep(2)
-    seletores = [
-        "[class*='fc-event']",
-        "[class*='event-item']",
-        "[class*='calendar-event']",
-        "div[style*='background'][data-id]",
-    ]
-    for sel in seletores:
-        itens = page.locator(sel).all()
-        if itens:
-            print(f"  {len(itens)} eventos encontrados com seletor '{sel}'.")
-            return itens
-
-    print("  Nenhum evento encontrado com seletores padrão.")
-    return []
+    print(f"  {len(hrefs)} eventos encontrados.")
+    return hrefs
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +285,48 @@ def salvar_os(page) -> bool:
         except Exception:
             continue
     return False
+
+
+def processar_os_apos_clique(page, dry_run: bool, url_calendario: str) -> str:
+    """Processa a OS já aberta (após clique). Volta ao calendário no final."""
+    if "/login" in page.url:
+        return "erro"
+
+    estado = ler_estado(page)
+    titulo = page.title() or page.url
+
+    if "realizado" not in estado.lower() and "realizada" not in estado.lower():
+        print(f"    [{estado or '---'}] {titulo[:50]} — ignorada")
+        page.go_back()
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+        return "ignorada"
+
+    print(f"    [Realizado] {titulo[:50]}")
+
+    if dry_run:
+        page.go_back()
+        page.wait_for_load_state("networkidle")
+        return "ignorada"
+
+    if not alterar_tipo_para_fechado(page):
+        print("    Campo Tipo não encontrado.")
+        page.screenshot(path=f"debug_tipo_{int(time.time())}.png")
+        page.go_back()
+        page.wait_for_load_state("networkidle")
+        return "erro"
+
+    if not salvar_os(page):
+        print("    Botão salvar não encontrado.")
+        page.go_back()
+        page.wait_for_load_state("networkidle")
+        return "erro"
+
+    print("    OS fechada com sucesso!")
+    page.goto(url_calendario)
+    page.wait_for_load_state("networkidle")
+    time.sleep(2)
+    return "fechada"
 
 
 def processar_os_por_url(page, url: str, dry_run: bool) -> str:
@@ -389,11 +447,30 @@ def main() -> None:
             # Tenta primeiro coletar links diretos das OS
             links = coletar_links_os(page)
 
+            fechadas = erros = ignoradas = 0
+
             if links:
-                print(f"\n  Processando {len(links)} OS via links...\n")
-                fechadas = erros = ignoradas = 0
+                print(f"\n  Processando {len(links)} OS...\n")
                 for link in links:
-                    resultado = processar_os_por_url(page, link, dry_run=args.dry_run)
+                    if link.startswith("__index__"):
+                        idx = int(link.replace("__index__", ""))
+                        seletores_ev = ['[class*="fc-event"]', '[class*="event-item"]', '[data-event-id]']
+                        clicou = False
+                        for sel in seletores_ev:
+                            try:
+                                page.locator(sel).nth(idx).click(timeout=3000)
+                                page.wait_for_load_state("networkidle")
+                                clicou = True
+                                break
+                            except Exception:
+                                continue
+                        if not clicou:
+                            ignoradas += 1
+                            continue
+                        resultado = processar_os_apos_clique(page, args.dry_run, url_calendario)
+                    else:
+                        resultado = processar_os_por_url(page, link, dry_run=args.dry_run)
+
                     if resultado == "fechada":
                         fechadas += 1
                     elif resultado == "erro":
@@ -402,29 +479,7 @@ def main() -> None:
                         ignoradas += 1
                     time.sleep(0.5)
             else:
-                # Fallback: clica em cada evento do calendário
-                eventos = coletar_eventos_clicaveis(page)
-                if not eventos:
-                    print(f"\n  Nenhuma OS encontrada em {label}.")
-                else:
-                    print(f"\n  Processando {len(eventos)} eventos via clique...\n")
-                    fechadas = erros = ignoradas = 0
-                    for i in range(len(eventos)):
-                        # Re-coleta eventos pois o DOM pode ter mudado
-                        eventos_atuais = coletar_eventos_clicaveis(page)
-                        if i >= len(eventos_atuais):
-                            break
-                        resultado = processar_os_por_click(
-                            page, eventos_atuais[i], dry_run=args.dry_run,
-                            url_calendario=url_calendario
-                        )
-                        if resultado == "fechada":
-                            fechadas += 1
-                        elif resultado == "erro":
-                            erros += 1
-                        else:
-                            ignoradas += 1
-                        time.sleep(0.5)
+                print(f"\n  Nenhuma OS encontrada em {label}.")
 
             print(f"\n  Resumo {label}:")
             print(f"    Fechadas:  {fechadas}")
