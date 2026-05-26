@@ -319,9 +319,13 @@ def main() -> None:
             if args.debug:
                 fname = f"debug_calendario_{alvo.strftime('%Y%m%d')}.png"
                 page.screenshot(path=fname, full_page=True)
-                sel, n = descobrir_seletor_eventos(page)
+                n = page.evaluate("() => document.querySelectorAll('.fc-event').length")
+                eventos_debug = extrair_urls_eventos(page, ".fc-event")
                 print(f"  Screenshot salvo: {fname}")
-                print(f"  Seletor eventos: '{sel}' ({n} encontrados)")
+                print(f"  .fc-event encontrados: {n}")
+                print(f"  URLs extraídas: {len(eventos_debug)}")
+                for ev in eventos_debug[:5]:
+                    print(f"    {ev['href']}  →  {ev['texto'][:50]}")
                 return
 
             # Descobre seletor e extrai todos os URLs dos eventos de uma vez
