@@ -196,7 +196,32 @@ def ler_estado(page) -> str:
     """) or ""
 
 
-def alterar_tipo_fechado(page) -> bool:
+def ler_tipo(page) -> str:
+    """Lê o valor atual do campo Tipo."""
+    return page.evaluate("""
+        () => {
+            const selects = Array.from(document.querySelectorAll('select'));
+            // Por name/id contendo "tipo"
+            for (const s of selects) {
+                const id = (s.name || s.id || '').toLowerCase();
+                if (id.includes('tipo') || id.includes('type')) {
+                    return s.options[s.selectedIndex]?.text || s.value || '';
+                }
+            }
+            // Pela label "Tipo"
+            for (const lbl of document.querySelectorAll('label')) {
+                if (/^tipo/i.test(lbl.textContent.trim())) {
+                    const forId = lbl.getAttribute('for');
+                    const s = forId ? document.getElementById(forId)
+                                    : lbl.parentElement?.querySelector('select');
+                    if (s && s.tagName === 'SELECT') {
+                        return s.options[s.selectedIndex]?.text || s.value || '';
+                    }
+                }
+            }
+            return '';
+        }
+    """) or ""
     """Muda o campo Tipo para 'Fechado' — encontra pelo label 'Tipo' e opção 'Fechado'."""
     resultado = page.evaluate("""
         () => {
@@ -295,12 +320,19 @@ def processar_os(page, url: str, texto: str, dry_run: bool) -> str:
         return "erro"
 
     estado = ler_estado(page)
+    tipo   = ler_tipo(page)
 
+    # Ignora OS que não foram realizadas pelo técnico
     if "realiz" not in estado.lower():
         print(f"    [{estado or '---'}] {titulo} — ignorada")
         return "ignorada"
 
-    print(f"    [Realizado] {titulo}")
+    # Ignora OS que já estão com Tipo = Fechado
+    if "fechad" in tipo.lower():
+        print(f"    [Já fechado] {titulo} — ignorada")
+        return "ignorada"
+
+    print(f"    [PARA FECHAR] Estado={estado} | Tipo={tipo} | {titulo}")
 
     if dry_run:
         return "ignorada"
