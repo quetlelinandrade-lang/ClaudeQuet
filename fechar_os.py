@@ -88,20 +88,17 @@ def login(page) -> None:
         except Exception:
             continue
 
-    url_antes = page.url
-    try:
-        page.wait_for_url(lambda u: u != url_antes, timeout=10000)
-    except PlaywrightTimeout:
-        pass
-
+    # Aguarda a página responder ao clique
+    time.sleep(3)
     page.wait_for_load_state("networkidle")
     print(f"    URL após login: {page.url}")
+    page.screenshot(path="pos_login.png")
+    print("    Screenshot salvo em pos_login.png")
 
-    # Salva screenshot para diagnóstico se ainda estiver na página de login
+    # Considera login bem-sucedido se a URL mudou para fora do /login
     if "/login" in page.url:
-        page.screenshot(path="login_debug.png")
         raise RuntimeError(
-            "Login falhou. Screenshot salvo em login_debug.png — verifique email/senha no .env"
+            "Login falhou. Veja o arquivo pos_login.png na pasta claudequet para diagnóstico."
         )
 
     print("  Login realizado com sucesso.")
