@@ -149,44 +149,109 @@ def extrair_urls_eventos(page, seletor: str) -> list[dict]:
 # ──────────────────────────────────────────────
 
 def ler_estado(page) -> str:
-    """Lê o valor do campo Estado — procura o select que tem opção 'realizado'."""
+    """Lê o valor do campo Estado. Retorna o texto selecionado ou 'debug:...' se não achar."""
     return page.evaluate("""
         () => {
             const selects = Array.from(document.querySelectorAll('select'));
+
+            // 1) Pelo name/id contendo "estado" ou "status"
+            for (const s of selects) {
+                const id = (s.name || s.id || '').toLowerCase();
+                if (id.includes('estado') || id.includes('status') || id.includes('state')) {
+                    return s.options[s.selectedIndex]?.text || s.value || '';
+                }
+            }
+
+            // 2) Pela label com texto "Estado"
+            for (const lbl of document.querySelectorAll('label')) {
+                if (/^estado/i.test(lbl.textContent.trim())) {
+                    const forId = lbl.getAttribute('for');
+                    const sel = forId ? document.getElementById(forId) : null;
+                    if (sel && sel.tagName === 'SELECT') {
+                        return sel.options[sel.selectedIndex]?.text || sel.value || '';
+                    }
+                    // tenta select irmão
+                    const parent = lbl.parentElement;
+                    const siblingSel = parent && parent.querySelector('select');
+                    if (siblingSel) {
+                        return siblingSel.options[siblingSel.selectedIndex]?.text || siblingSel.value || '';
+                    }
+                }
+            }
+
+            // 3) Opção que contém "realiz" no texto
             for (const s of selects) {
                 const opcoes = Array.from(s.options).map(o => o.text.toLowerCase());
                 if (opcoes.some(o => o.includes('realiz'))) {
-                    return s.options[s.selectedIndex]
-                        ? s.options[s.selectedIndex].text
-                        : s.value;
+                    return s.options[s.selectedIndex]?.text || s.value || '';
                 }
             }
-            return '';
+
+            // 4) Debug: retorna info de todos os selects para diagnóstico
+            const info = selects.map(s =>
+                `[${s.name||s.id||'?'}="${s.options[s.selectedIndex]?.text||'?'}"]`
+            ).join(' ');
+            return 'debug:' + info;
         }
     """) or ""
 
 
 def alterar_tipo_fechado(page) -> bool:
-    """Muda o campo Tipo para 'Fechado' — procura o select que tem opção 'fechado'."""
+    """Muda o campo Tipo para 'Fechado' — encontra pelo label 'Tipo' e opção 'Fechado'."""
     resultado = page.evaluate("""
         () => {
             const selects = Array.from(document.querySelectorAll('select'));
+
+            // 1) Pelo name/id contendo "tipo"
             for (const s of selects) {
-                const opcoes = Array.from(s.options);
-                const alvo = opcoes.find(o =>
-                    o.text.toLowerCase().includes('fechad') ||
-                    o.value.toLowerCase().includes('fechad')
-                );
-                if (alvo) {
-                    s.value = alvo.value;
-                    s.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
+                const id = (s.name || s.id || '').toLowerCase();
+                if (id.includes('tipo') || id.includes('type')) {
+                    const alvo = Array.from(s.options).find(o =>
+                        o.text.toLowerCase().includes('fechad') ||
+                        o.value.toLowerCase().includes('fechad')
+                    );
+                    if (alvo) {
+                        s.value = alvo.value;
+                        s.dispatchEvent(new Event('change', { bubbles: true }));
+                        s.dispatchEvent(new Event('input',  { bubbles: true }));
+                        return 'ok:' + alvo.text;
+                    }
                 }
             }
-            return false;
+
+            // 2) Pela label com texto "Tipo"
+            for (const lbl of document.querySelectorAll('label')) {
+                if (/^tipo/i.test(lbl.textContent.trim())) {
+                    const forId = lbl.getAttribute('for');
+                    const s = forId ? document.getElementById(forId)
+                                    : lbl.parentElement?.querySelector('select');
+                    if (s && s.tagName === 'SELECT') {
+                        const alvo = Array.from(s.options).find(o =>
+                            o.text.toLowerCase().includes('fechad') ||
+                            o.value.toLowerCase().includes('fechad')
+                        );
+                        if (alvo) {
+                            s.value = alvo.value;
+                            s.dispatchEvent(new Event('change', { bubbles: true }));
+                            s.dispatchEvent(new Event('input',  { bubbles: true }));
+                            return 'ok:' + alvo.text;
+                        }
+                    }
+                }
+            }
+
+            // Debug: lista todos os selects e suas opções
+            return 'debug:' + selects.map(s =>
+                `[${s.name||s.id||'?'}:${Array.from(s.options).map(o=>o.text).join('|')}]`
+            ).join(' ');
         }
     """)
-    return bool(resultado)
+    if isinstance(resultado, str) and resultado.startswith("ok:"):
+        print(f"    Tipo → {resultado[3:]}")
+        return True
+    if isinstance(resultado, str) and resultado.startswith("debug:"):
+        print(f"    DEBUG selects: {resultado[6:200]}")
+    return False
 
 
 def salvar(page) -> bool:
@@ -221,7 +286,7 @@ def processar_os(page, url: str, texto: str, dry_run: bool) -> str:
     try:
         page.goto(full_url)
         page.wait_for_load_state("networkidle")
-        time.sleep(1)
+        time.sleep(2)  # aguarda selects carregarem (SPA)
     except Exception as e:
         print(f"    [ERRO] {titulo}: {e}")
         return "erro"
