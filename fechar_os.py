@@ -149,79 +149,44 @@ def extrair_urls_eventos(page, seletor: str) -> list[dict]:
 # ──────────────────────────────────────────────
 
 def ler_estado(page) -> str:
-    """Lê o valor do campo Estado na ficha da OS."""
-    # Tenta via select com nome/id "estado"
-    for sel in ['select[name*="estado" i]', 'select[id*="estado" i]']:
-        try:
-            return page.locator(sel).first.input_value(timeout=3000)
-        except Exception:
-            continue
-
-    # Tenta via label "Estado" → select irmão
-    try:
-        labels = page.evaluate("""
-            () => {
-                return Array.from(document.querySelectorAll('label')).map(l => ({
-                    text: l.textContent.trim(),
-                    for: l.getAttribute('for') || ''
-                }));
+    """Lê o valor do campo Estado — procura o select que tem opção 'realizado'."""
+    return page.evaluate("""
+        () => {
+            const selects = Array.from(document.querySelectorAll('select'));
+            for (const s of selects) {
+                const opcoes = Array.from(s.options).map(o => o.text.toLowerCase());
+                if (opcoes.some(o => o.includes('realiz'))) {
+                    return s.options[s.selectedIndex]
+                        ? s.options[s.selectedIndex].text
+                        : s.value;
+                }
             }
-        """)
-        for lbl in labels:
-            if "estado" in lbl["text"].lower() and lbl["for"]:
-                try:
-                    return page.locator(f'#{lbl["for"]}').input_value(timeout=2000)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    # Lê o texto visível do primeiro select que contenha "realizado" ou "não realizado"
-    try:
-        selects = page.locator("select").all()
-        for s in selects:
-            txt = s.input_value(timeout=1000)
-            if txt and ("realiz" in txt.lower() or "não realiz" in txt.lower()):
-                return txt
-    except Exception:
-        pass
-
-    return ""
+            return '';
+        }
+    """) or ""
 
 
 def alterar_tipo_fechado(page) -> bool:
-    """Muda o campo Tipo para 'Fechado'. Retorna True se conseguiu."""
-    for sel in ['select[name*="tipo" i]', 'select[id*="tipo" i]']:
-        for val in ["Fechado", "fechado", "FECHADO"]:
-            try:
-                page.select_option(sel, label=val, timeout=3000)
-                return True
-            except Exception:
-                try:
-                    page.select_option(sel, value=val, timeout=1000)
-                    return True
-                except Exception:
-                    continue
-
-    # Fallback via label
-    try:
-        labels = page.evaluate("""
-            () => Array.from(document.querySelectorAll('label')).map(l => ({
-                text: l.textContent.trim(),
-                for: l.getAttribute('for') || ''
-            }))
-        """)
-        for lbl in labels:
-            if "tipo" in lbl["text"].lower() and lbl["for"]:
-                for val in ["Fechado", "fechado", "FECHADO"]:
-                    try:
-                        page.select_option(f'#{lbl["for"]}', label=val, timeout=2000)
-                        return True
-                    except Exception:
-                        continue
-    except Exception:
-        pass
-    return False
+    """Muda o campo Tipo para 'Fechado' — procura o select que tem opção 'fechado'."""
+    resultado = page.evaluate("""
+        () => {
+            const selects = Array.from(document.querySelectorAll('select'));
+            for (const s of selects) {
+                const opcoes = Array.from(s.options);
+                const alvo = opcoes.find(o =>
+                    o.text.toLowerCase().includes('fechad') ||
+                    o.value.toLowerCase().includes('fechad')
+                );
+                if (alvo) {
+                    s.value = alvo.value;
+                    s.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+            }
+            return false;
+        }
+    """)
+    return bool(resultado)
 
 
 def salvar(page) -> bool:
