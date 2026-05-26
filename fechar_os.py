@@ -309,9 +309,8 @@ def processar_os(page, url: str, texto: str, dry_run: bool) -> str:
     titulo = texto[:60] or url
 
     try:
-        page.goto(full_url)
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)  # aguarda selects carregarem (SPA)
+        page.goto(full_url, wait_until="domcontentloaded", timeout=20000)
+        time.sleep(2)  # aguarda selects carregarem
     except Exception as e:
         print(f"    [ERRO] {titulo}: {e}")
         return "erro"
@@ -322,12 +321,20 @@ def processar_os(page, url: str, texto: str, dry_run: bool) -> str:
     estado = ler_estado(page)
     tipo   = ler_tipo(page)
 
-    # Ignora OS que não foram realizadas pelo técnico
-    if "realiz" not in estado.lower():
+    # Só processa Estado = "Realizado" (exclui "Não Realizado", "Cancelado", etc.)
+    estado_lower = estado.lower().strip()
+    is_realizado = (
+        "realizado" in estado_lower
+        and "não" not in estado_lower
+        and "nao" not in estado_lower
+        and "não" not in estado_lower
+    )
+
+    if not is_realizado:
         print(f"    [{estado or '---'}] {titulo} — ignorada")
         return "ignorada"
 
-    # Ignora OS que já estão com Tipo = Fechado
+    # Ignora OS cujo Tipo já é Fechado
     if "fechad" in tipo.lower():
         print(f"    [Já fechado] {titulo} — ignorada")
         return "ignorada"
