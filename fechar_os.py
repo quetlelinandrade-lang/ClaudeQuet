@@ -178,7 +178,20 @@ def alterar_tipo_fechado(page) -> bool:
                 }
             }
 
-            // 2) Pelo label "Tipo"
+            // 2) Pelo label cujo texto é exatamente "Tipo" (ou "Tipo:")
+            if (!tipoSelect) {
+                for (const lbl of document.querySelectorAll('label')) {
+                    const txt = lbl.textContent.trim().toLowerCase().replace(/:$/, '');
+                    if (txt === 'tipo') {
+                        const forId = lbl.getAttribute('for');
+                        const s = forId ? document.getElementById(forId)
+                                        : lbl.parentElement?.querySelector('select');
+                        if (s && s.tagName === 'SELECT') { tipoSelect = s; break; }
+                    }
+                }
+            }
+
+            // 3) Label que começa com "tipo" (fallback)
             if (!tipoSelect) {
                 for (const lbl of document.querySelectorAll('label')) {
                     const txt = lbl.textContent.trim().toLowerCase();
@@ -192,22 +205,25 @@ def alterar_tipo_fechado(page) -> bool:
             }
 
             if (!tipoSelect) {
-                // Debug: lista todos os selects
-                return 'erro:nenhum select tipo. Selects: ' +
-                    selects.map(s => s.name||s.id||'?').join(',');
+                return 'erro:nenhum select tipo. Selects na pagina: [' +
+                    selects.map(s => (s.name||s.id||'sem-id') + '(' +
+                        Array.from(s.options).map(o=>o.text).slice(0,3).join('|') + ')').join(', ') + ']';
             }
 
-            const alvo = Array.from(tipoSelect.options).find(o =>
-                o.text.toLowerCase().includes('fechad') ||
-                o.value.toLowerCase().includes('fechad')
+            const opcoes = Array.from(tipoSelect.options);
+            const alvo = opcoes.find(o =>
+                o.text.trim().toLowerCase().includes('fechad') ||
+                o.value.trim().toLowerCase().includes('fechad')
             );
 
             if (!alvo) {
-                return 'erro:opcao fechado nao encontrada. Opcoes: ' +
-                    Array.from(tipoSelect.options).map(o => o.text).join(' | ');
+                return 'erro:opcao fechado nao encontrada no select id=' + (tipoSelect.id||tipoSelect.name||'?') +
+                    '. Opcoes disponiveis: ' + opcoes.map(o => '"' + o.text + '"').join(' | ');
             }
 
-            // Setter nativo — funciona com Vue.js e React
+            const anteriorText = tipoSelect.options[tipoSelect.selectedIndex]?.text || '';
+
+            // Setter nativo — necessário para Vue.js/React não ignorar a mudança
             const setter = Object.getOwnPropertyDescriptor(
                 window.HTMLSelectElement.prototype, 'value'
             ).set;
@@ -215,7 +231,18 @@ def alterar_tipo_fechado(page) -> bool:
             tipoSelect.dispatchEvent(new Event('input',  { bubbles: true }));
             tipoSelect.dispatchEvent(new Event('change', { bubbles: true }));
 
-            return 'ok:' + alvo.text;
+            // Vue 3: dispara também no elemento pai caso seja um wrapper
+            const parent = tipoSelect.parentElement;
+            if (parent) {
+                parent.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Verifica se a mudança foi aceita pelo DOM
+            const posteriorText = tipoSelect.options[tipoSelect.selectedIndex]?.text || '';
+            if (posteriorText.toLowerCase().includes('fechad')) {
+                return 'ok:' + anteriorText + ' → ' + posteriorText;
+            }
+            return 'warn:mudanca enviada mas valor atual ainda e "' + posteriorText + '" (esperado "' + alvo.text + '")';
         }
     """)
 
@@ -223,7 +250,11 @@ def alterar_tipo_fechado(page) -> bool:
         print(f"    Tipo → {resultado[3:]}")
         return True
 
-    print(f"    AVISO: {resultado}")
+    if isinstance(resultado, str) and resultado.startswith("warn:"):
+        print(f"    AVISO mudança parcial: {resultado[5:]}")
+        return True  # tenta salvar mesmo assim
+
+    print(f"    FALHA: {resultado}")
     return False
 
 
@@ -232,15 +263,60 @@ def alterar_tipo_fechado(page) -> bool:
 # ──────────────────────────────────────────────
 
 def salvar(page) -> bool:
+    time.sleep(1)  # aguarda Vue processar a mudança do select antes de salvar
     for sel in ['button:has-text("Guardar")', 'button:has-text("Salvar")',
                 'button:has-text("Gravar")', 'button[type="submit"]']:
         try:
             page.click(sel, timeout=5000)
-            time.sleep(2)
+            time.sleep(3)
             return True
         except Exception:
             continue
     return False
+
+
+def scan_form(page, url: str) -> None:
+    """Imprime todos os campos do formulário de uma OS (para diagnóstico)."""
+    import json
+    full_url = url if url.startswith("http") else f"{URL}{url}"
+    print(f"\n  Abrindo OS para diagnóstico: {full_url}")
+    page.goto(full_url, wait_until="domcontentloaded", timeout=20000)
+    time.sleep(3)
+
+    info = page.evaluate("""
+        () => {
+            const selects = Array.from(document.querySelectorAll('select')).map(s => ({
+                tag: 'select',
+                name: s.name || null,
+                id:   s.id   || null,
+                selected: s.options[s.selectedIndex]?.text || '',
+                options: Array.from(s.options).map(o => o.text + ' [val=' + o.value + ']')
+            }));
+            const inputs = Array.from(document.querySelectorAll('input:not([type=hidden])')).map(i => ({
+                tag: 'input',
+                type: i.type,
+                name: i.name || null,
+                id:   i.id   || null,
+                value: i.value || null
+            }));
+            const labels = Array.from(document.querySelectorAll('label')).map(l => ({
+                text: l.textContent.trim(),
+                for:  l.getAttribute('for')
+            }));
+            return { selects, inputs, labels };
+        }
+    """)
+    print("\n=== SELECTS ===")
+    for s in info.get("selects", []):
+        print(f"  name={s['name']} id={s['id']} selecionado='{s['selected']}'")
+        for o in s["options"]:
+            print(f"    opção: {o}")
+    print("\n=== INPUTS ===")
+    for i in info.get("inputs", []):
+        print(f"  [{i['type']}] name={i['name']} id={i['id']} value={i['value']}")
+    print("\n=== LABELS ===")
+    for l in info.get("labels", []):
+        print(f"  '{l['text']}'  for={l['for']}")
 
 
 # ──────────────────────────────────────────────
@@ -303,9 +379,10 @@ def processar_os(page, url: str, texto: str, dry_run: bool) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="Lista sem alterar")
-    parser.add_argument("--hoje",    action="store_true", help="Processa hoje")
-    parser.add_argument("--debug",   action="store_true", help="Mostra URLs e sai")
+    parser.add_argument("--dry-run",   action="store_true", help="Lista sem alterar")
+    parser.add_argument("--hoje",      action="store_true", help="Processa hoje")
+    parser.add_argument("--debug",     action="store_true", help="Mostra URLs e sai")
+    parser.add_argument("--scan-form", metavar="URL",       help="Mostra campos de uma OS e sai")
     args = parser.parse_args()
 
     alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
@@ -320,6 +397,11 @@ def main() -> None:
 
         try:
             aguardar_login(page)
+
+            if args.scan_form:
+                scan_form(page, args.scan_form)
+                return
+
             ir_para_dia_vista(page, alvo)
 
             if args.debug:
