@@ -71,13 +71,38 @@ def login(page) -> None:
     else:
         raise RuntimeError("Campo de senha não encontrado na página de login.")
 
-    page.click('button[type="submit"]')
+    # Tenta clicar no botão de login
+    submit_selectors = [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:has-text("Entrar")',
+        'button:has-text("Login")',
+        'button:has-text("Acessar")',
+        'button:has-text("Iniciar")',
+    ]
+    for sel in submit_selectors:
+        try:
+            page.click(sel, timeout=3000)
+            print(f"    Botão login clicado: {sel}")
+            break
+        except Exception:
+            continue
+
+    url_antes = page.url
+    try:
+        page.wait_for_url(lambda u: u != url_antes, timeout=10000)
+    except PlaywrightTimeout:
+        pass
 
     page.wait_for_load_state("networkidle")
+    print(f"    URL após login: {page.url}")
 
-    # Verifica se o login foi bem-sucedido
+    # Salva screenshot para diagnóstico se ainda estiver na página de login
     if "/login" in page.url:
-        raise RuntimeError("Login falhou — verifique EMAIL e PASSWORD no .env")
+        page.screenshot(path="login_debug.png")
+        raise RuntimeError(
+            "Login falhou. Screenshot salvo em login_debug.png — verifique email/senha no .env"
+        )
 
     print("  Login realizado com sucesso.")
 
