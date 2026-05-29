@@ -89,19 +89,23 @@ def aguardar_login_awo(page) -> None:
 def aguardar_login_worten(page) -> None:
     print("\n  Abrindo Worten — faça o login MANUALMENTE no navegador.")
     print("  O script continua sozinho após o login.\n")
-    page.goto("https://www.worten.pt/login")
+    page.goto("https://www.worten.pt/resolve/servicos?status=all")
     page.wait_for_load_state("domcontentloaded")
+
+    # Já está na página de serviços (logado)
+    if "resolve/servicos" in page.url:
+        print("  Worten pronta (já logado)!\n")
+        return
+
+    # Aguarda o campo de password desaparecer (login concluído)
     try:
-        page.wait_for_url(
-            lambda u: "login" not in u.lower() and "auth" not in u.lower(),
-            timeout=180000
-        )
+        page.wait_for_selector('input[type="password"]', state="detached", timeout=180000)
     except PlaywrightTimeout:
         raise RuntimeError("Tempo esgotado aguardando login na Worten (3 min).")
     except Exception:
-        if "login" in page.url.lower() or "auth" in page.url.lower():
-            raise RuntimeError("Erro durante navegação no login da Worten.")
-    # Após login vai direto para a listagem de serviços
+        pass
+
+    time.sleep(1)
     print("  Login Worten OK! A navegar para os serviços...")
     page.goto("https://www.worten.pt/resolve/servicos?status=all",
               wait_until="domcontentloaded", timeout=20000)
@@ -764,11 +768,31 @@ def processar_os_worten(page, dados: DadosOS) -> bool:
     try:
         # ── Passo 1: pesquisar processo ──
         page.goto(f"{URL_WORTEN}?status=all", wait_until="domcontentloaded", timeout=20000)
-        time.sleep(2)
+        # Aguarda a listagem aparecer antes de pesquisar
+        try:
+            page.wait_for_selector(
+                'input[placeholder*="pesquis" i], input[type="search"], '
+                'h1:has-text("Listagem"), h2:has-text("Listagem")',
+                timeout=10000
+            )
+        except Exception:
+            pass
+        time.sleep(1)
 
         pesquisou = False
-        for sel in ['input[type="search"]', 'input[placeholder*="pesquis" i]',
-                    'input[placeholder*="número" i]', 'input[name*="search"]', 'input[name*="q"]']:
+        for sel in [
+            'input[placeholder*="pesquis" i]',
+            'input[type="search"]',
+            'input[placeholder*="número" i]',
+            'input[placeholder*="procur" i]',
+            'input[name*="search"]',
+            'input[name*="q"]',
+            'input[name*="pesquis"]',
+            '.search-input input',
+            '[class*="search"] input',
+            '[class*="filter"] input',
+            'form input[type="text"]',
+        ]:
             try:
                 page.fill(sel, dados.numero_processo, timeout=3000)
                 page.keyboard.press("Enter")
