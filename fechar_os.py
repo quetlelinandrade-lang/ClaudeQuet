@@ -21,10 +21,11 @@ Uso:
 import os
 import sys
 import time
+import json
 import argparse
 import urllib.request
 from datetime import date, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -445,6 +446,40 @@ def salvar_awo(page) -> bool:
 
 
 # ──────────────────────────────────────────────
+# Persistência JSON
+# ──────────────────────────────────────────────
+
+def salvar_json(lista: list, alvo: date) -> Path:
+    caminho = PASTA_FECHO / f"dados_{alvo.strftime('%Y-%m-%d')}.json"
+    registros = []
+    for d in lista:
+        r = asdict(d)
+        r["pasta"]    = str(d.pasta)    if d.pasta    else None
+        r["pdf_path"] = str(d.pdf_path) if d.pdf_path else None
+        registros.append(r)
+    caminho.write_text(json.dumps(registros, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  Dados guardados em: {caminho}")
+    return caminho
+
+
+def carregar_json(alvo: date) -> list:
+    caminho = PASTA_FECHO / f"dados_{alvo.strftime('%Y-%m-%d')}.json"
+    if not caminho.exists():
+        return []
+    registros = json.loads(caminho.read_text(encoding="utf-8"))
+    lista = []
+    for r in registros:
+        d = DadosOS(href=r["href"], texto=r["texto"])
+        for campo in ("awo_id", "numero_processo", "data_visita", "tecnico",
+                      "trabalhos_realizados", "status", "motivo"):
+            setattr(d, campo, r.get(campo, ""))
+        d.pasta    = Path(r["pasta"])    if r.get("pasta")    else None
+        d.pdf_path = Path(r["pdf_path"]) if r.get("pdf_path") else None
+        lista.append(d)
+    return lista
+
+
+# ──────────────────────────────────────────────
 # Scan de formulário (debug)
 # ──────────────────────────────────────────────
 
@@ -491,7 +526,12 @@ def scan_form(page, url: str) -> None:
 # Processamento de cada OS no AWO
 # ──────────────────────────────────────────────
 
-def processar_os_awo(page, ev: dict, dry_run: bool, pw) -> DadosOS:
+def processar_os_awo(page, ev: dict, dry_run: bool, pw,
+                     collect_only: bool = False) -> DadosOS:
+    """
+    collect_only=True: só lê os dados sem alterar nada (para --so-worten).
+    Aceita OS já fechadas (Tipo=Fechado) para releitura.
+    """
     dados = DadosOS(href=ev["href"], texto=ev["texto"])
     dados.awo_id = ev["href"].rstrip("/").rsplit("/", 1)[-1]
     full_url = ev["href"] if ev["href"].startswith("http") else f"{URL_AWO}{ev['href']}"
@@ -520,15 +560,37 @@ def processar_os_awo(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         dados.status = "ignorada"
         return dados
 
-    if "fechad" in tecnico.lower():
+    # Em collect_only aceita Tipo=Fechado (já processado antes); no fluxo normal, pula
+    if not collect_only and "fechad" in tecnico.lower():
         print(f"    [Já fechado] {titulo} — ignorada")
         dados.status = "ignorada"
         return dados
 
-    dados.tecnico          = tecnico
-    dados.numero_processo  = ler_numero_processo(page)
-    dados.data_visita      = ler_data_visita(page)
+    # Técnico: se Tipo=Fechado, tenta campo alternativo ou usa "(Fechado)"
+    if "fechad" in tecnico.lower():
+        dados.tecnico = ler_select_por_nome_ou_label(page, "tecnico") or \
+                        ler_select_por_nome_ou_label(page, "responsavel") or \
+                        ler_select_por_nome_ou_label(page, "colaborador") or \
+                        "(ver OS)"
+    else:
+        dados.tecnico = tecnico
+
+    dados.numero_processo      = ler_numero_processo(page)
+    dados.data_visita          = ler_data_visita(page)
     dados.trabalhos_realizados = ler_trabalhos_realizados(page)
+
+    if collect_only:
+        # Usa pasta/PDF já existentes na FECHO
+        if dados.numero_processo:
+            pasta = PASTA_FECHO / dados.numero_processo
+            if pasta.exists():
+                dados.pasta = pasta
+                pdf = pasta / f"{dados.numero_processo}.pdf"
+                if pdf.exists():
+                    dados.pdf_path = pdf
+        print(f"    [COLETAR] Processo={dados.numero_processo} | Técnico={dados.tecnico} | TR={'sim' if dados.trabalhos_realizados else 'NÃO'}")
+        dados.status = "awo_ok"
+        return dados
 
     print(f"    [PARA FECHAR] Estado={estado} | Técnico={dados.tecnico} | Processo={dados.numero_processo}")
 
@@ -539,7 +601,7 @@ def processar_os_awo(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         dados.status = "para_fechar"
         return dados
 
-    # Baixa imagens e gera PDF (só se TR preenchido e processo identificado)
+    # Baixa imagens e gera PDF
     if dados.numero_processo and dados.trabalhos_realizados:
         pasta = PASTA_FECHO / dados.numero_processo
         pasta.mkdir(parents=True, exist_ok=True)
@@ -548,7 +610,6 @@ def processar_os_awo(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         n_imgs = baixar_imagens(page, pasta)
         print(f"    {n_imgs} imagem(ns) baixada(s) → {pasta}")
 
-        # Volta para aba Ficha antes do PDF
         for sel in ['a:has-text("Ficha")', '[href*="ficha"]', 'li:has-text("Ficha") a']:
             try:
                 page.click(sel, timeout=3000)
@@ -861,21 +922,47 @@ def processar_os_worten(page, dados: DadosOS) -> bool:
 
 
 # ──────────────────────────────────────────────
+# Relatório final
+# ──────────────────────────────────────────────
+
+def _imprimir_relatorio(candidatas: list, saltadas: list, erros_awo: list, label: str) -> None:
+    concluidas = sum(1 for d in candidatas if d.status == "concluida")
+    erros_w    = sum(1 for d in candidatas if d.status == "erro")
+    print(f"\n{'='*44}")
+    print("         RELATÓRIO FINAL")
+    print(f"{'='*44}")
+    print(f"  Concluídas com sucesso : {concluidas}")
+    print(f"  Saltadas (sem TR)       : {len(saltadas)}")
+    print(f"  Erros AWO               : {len(erros_awo)}")
+    print(f"  Erros Worten            : {erros_w}")
+    todos_erros = [d for d in candidatas + erros_awo if d.status == "erro"]
+    if todos_erros:
+        print("\n  Processos com erro:")
+        for d in todos_erros:
+            print(f"    - {d.numero_processo or d.texto[:40]} → {d.motivo}")
+    print(f"{'='*44}")
+
+
+# ──────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run",   action="store_true", help="Lista sem alterar")
-    parser.add_argument("--hoje",      action="store_true", help="Processa hoje")
-    parser.add_argument("--debug",     action="store_true", help="Mostra eventos e sai")
-    parser.add_argument("--so-awo",    action="store_true", help="Só AWO, pula Worten")
-    parser.add_argument("--scan-form", metavar="URL",       help="Diagnóstico de formulário")
+    parser.add_argument("--dry-run",    action="store_true", help="Lista sem alterar")
+    parser.add_argument("--hoje",       action="store_true", help="Processa hoje")
+    parser.add_argument("--debug",      action="store_true", help="Mostra eventos e sai")
+    parser.add_argument("--so-awo",     action="store_true", help="Só AWO, pula Worten")
+    parser.add_argument("--so-worten",  action="store_true", help="Relê AWO sem alterar e processa Worten")
+    parser.add_argument("--scan-form",  metavar="URL",       help="Diagnóstico de formulário")
     args = parser.parse_args()
 
     alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
     label = alvo.strftime("%d/%m/%Y")
-    modo  = "DRY RUN" if args.dry_run else ("SÓ AWO" if args.so_awo else "AWO + WORTEN")
+    if args.dry_run:    modo = "DRY RUN"
+    elif args.so_awo:   modo = "SÓ AWO"
+    elif args.so_worten:modo = "SÓ WORTEN"
+    else:               modo = "AWO + WORTEN"
 
     print(f"\n=== Fechar OS — {label} ({modo}) ===")
     PASTA_FECHO.mkdir(parents=True, exist_ok=True)
@@ -920,6 +1007,30 @@ def main() -> None:
                 print("  Eventos sem URLs — use --debug para inspecionar.")
                 return
 
+            # ── Modo --so-worten: relê dados sem alterar, vai direto à Worten ──
+            if args.so_worten:
+                # Tenta carregar JSON salvo; se não existe, relê do AWO
+                lista = carregar_json(alvo)
+                if lista:
+                    print(f"  Dados carregados do JSON ({len(lista)} OS). Pulando releitura do AWO.")
+                else:
+                    print(f"  {len(eventos)} OS encontradas. Coletando dados do AWO (sem alterar)...\n")
+                    lista = []
+                    for ev in eventos:
+                        d = processar_os_awo(page, ev, dry_run=False, pw=pw, collect_only=True)
+                        lista.append(d)
+                        time.sleep(0.3)
+
+                candidatas = [d for d in lista if d.status == "awo_ok"
+                             and d.trabalhos_realizados and d.numero_processo]
+                print(f"\n  {len(candidatas)} OS prontas para a Worten.")
+                aguardar_login_worten(page)
+                for d in candidatas:
+                    processar_os_worten(page, d)
+                    time.sleep(0.5)
+                _imprimir_relatorio(candidatas, [], [d for d in lista if d.status=="erro"], label)
+                return
+
             print(f"  {len(eventos)} OS encontradas em {label}. Processando AWO...\n")
             lista: list[DadosOS] = []
 
@@ -947,6 +1058,11 @@ def main() -> None:
             if erros_awo:
                 print(f"  Erros AWO: {len(erros_awo)}")
 
+            # Guarda dados para reutilização (--so-worten)
+            awo_ok = [d for d in lista if d.status == "awo_ok"]
+            if awo_ok:
+                salvar_json(awo_ok, alvo)
+
             # ── Fase Worten ──
             candidatas = [d for d in lista if d.status == "awo_ok"
                          and d.trabalhos_realizados and d.numero_processo]
@@ -967,23 +1083,7 @@ def main() -> None:
                 processar_os_worten(page, d)
                 time.sleep(0.5)
 
-            # ── Relatório final ──
-            concluidas  = sum(1 for d in candidatas if d.status == "concluida")
-            erros_w     = sum(1 for d in candidatas if d.status == "erro")
-
-            print(f"\n{'='*44}")
-            print("         RELATÓRIO FINAL")
-            print(f"{'='*44}")
-            print(f"  Concluídas com sucesso : {concluidas}")
-            print(f"  Saltadas (sem TR)       : {len(saltadas)}")
-            print(f"  Erros AWO               : {len(erros_awo)}")
-            print(f"  Erros Worten            : {erros_w}")
-            todos_erros = [d for d in lista if d.status == "erro"]
-            if todos_erros:
-                print("\n  Processos com erro:")
-                for d in todos_erros:
-                    print(f"    - {d.numero_processo or d.texto[:40]} → {d.motivo}")
-            print(f"{'='*44}")
+            _imprimir_relatorio(candidatas, saltadas, erros_awo, label)
 
         except RuntimeError as exc:
             print(f"\nErro: {exc}")
