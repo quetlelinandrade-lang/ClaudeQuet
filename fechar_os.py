@@ -70,12 +70,19 @@ def aguardar_login_awo(page) -> None:
     print("\n  Abrindo AWO — faça o login MANUALMENTE no navegador.")
     print("  O script continua sozinho após o login.\n")
     page.goto(f"{URL_AWO}/login")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
     try:
         page.wait_for_url(lambda u: "/login" not in u, timeout=180000)
     except PlaywrightTimeout:
         raise RuntimeError("Tempo esgotado aguardando login no AWO (3 min).")
-    page.wait_for_load_state("networkidle")
+    except Exception:
+        # net::ERR_ABORTED pode ocorrer em redirects do AWO — verifica se saiu do /login
+        if "/login" in page.url:
+            raise RuntimeError("Erro durante navegação no login do AWO.")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
     print("  Login AWO OK!\n")
 
 
@@ -83,7 +90,7 @@ def aguardar_login_worten(page) -> None:
     print("\n  Abrindo Worten — faça o login MANUALMENTE no navegador.")
     print("  O script continua sozinho após o login.\n")
     page.goto(URL_WORTEN)
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
     try:
         page.wait_for_url(
             lambda u: "login" not in u.lower() and "auth" not in u.lower(),
@@ -91,7 +98,13 @@ def aguardar_login_worten(page) -> None:
         )
     except PlaywrightTimeout:
         raise RuntimeError("Tempo esgotado aguardando login na Worten (3 min).")
-    page.wait_for_load_state("networkidle")
+    except Exception:
+        if "login" in page.url.lower() or "auth" in page.url.lower():
+            raise RuntimeError("Erro durante navegação no login da Worten.")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
     print("  Login Worten OK!\n")
 
 
