@@ -922,13 +922,24 @@ def processar_os_worten(page, dados: DadosOS) -> bool:
             w_clicar(page, ["GUARDAR", "Guardar", "SALVAR", "Salvar"])
             time.sleep(2)
 
-        # ── Passo 7: Concluir Serviço (final) ──
+        # ── Passo 7: 2ª ronda ATUALIZAR PEDIDO → Concluir → Confirmar ──
+        # Após GUARDAR os Anexos, a página volta a mostrar ATUALIZAR PEDIDO
+        # (confirmado nas capturas de ecrã Img 18–20)
+        w_clicar(page, ["ATUALIZAR PEDIDO", "Atualizar Pedido", "ATUALIZAR"])
+        time.sleep(2)
+        w_clicar(page, ["Concluir Serviço", "CONCLUIR SERVIÇO", "Concluir serviço"])
+        time.sleep(1)
+        w_clicar(page, ["Serviço concluído", "Marcar pedido como finalizado",
+                        "Serviço concluído — Marcar pedido"])
+        time.sleep(2)
+
+        # ── Passo 8: Concluir Serviço (botão final) e fechar modal ──
         w_clicar(page, ["CONCLUIR SERVIÇO", "Concluir Serviço", "CONCLUIR"])
         time.sleep(2)
         w_clicar(page, ["FECHAR", "Fechar", "CLOSE"])
         time.sleep(1)
 
-        # ── Passo 8: Enviar mensagem ao cliente ──
+        # ── Passo 9: Enviar mensagem ao cliente ──
         for sel in ['a:has-text("ENVIAR MENSAGEM")', 'a:has-text("Enviar Mensagem")',
                     'button:has-text("ENVIAR MENSAGEM")', '[href*="mensagem"]']:
             try:
