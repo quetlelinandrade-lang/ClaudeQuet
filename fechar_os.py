@@ -89,7 +89,7 @@ def aguardar_login_awo(page) -> None:
 def aguardar_login_worten(page) -> None:
     print("\n  Abrindo Worten — faça o login MANUALMENTE no navegador.")
     print("  O script continua sozinho após o login.\n")
-    page.goto(URL_WORTEN)
+    page.goto("https://www.worten.pt/login")
     page.wait_for_load_state("domcontentloaded")
     try:
         page.wait_for_url(
@@ -101,11 +101,16 @@ def aguardar_login_worten(page) -> None:
     except Exception:
         if "login" in page.url.lower() or "auth" in page.url.lower():
             raise RuntimeError("Erro durante navegação no login da Worten.")
+    # Após login vai direto para a listagem de serviços
+    print("  Login Worten OK! A navegar para os serviços...")
+    page.goto("https://www.worten.pt/resolve/servicos?status=all",
+              wait_until="domcontentloaded", timeout=20000)
     try:
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
-    print("  Login Worten OK!\n")
+    time.sleep(2)
+    print("  Worten pronta!\n")
 
 
 # ──────────────────────────────────────────────
