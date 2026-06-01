@@ -19,7 +19,7 @@ O teu papel é criar estratégias de marketing, conteúdo para redes sociais, ca
 - Nome: Suporte Prime
 - Cores oficiais: Navy #001A6E (cor principal), Laranja #F47520 (destaque), Branco (texto)
 - Fontes: Montserrat (títulos e textos principais), Dancing Script (elementos decorativos/assinaturas)
-- Logótipo: hexágono (forma principal)
+- Logótipo: hexágono navy escuro com ícone de casa branca (contorno de telhado + parede) e barras de eficiência energética em verde, amarelo, laranja e vermelho (estilo etiqueta energética) dentro da casa; nome "Suporte Prime" em Montserrat navy abaixo, com símbolo de raio/energia no "o" de "Suporte"
 - Tom visual: profissional, moderno, confiável, com energia
 
 ## VOZ E TOM DA MARCA
