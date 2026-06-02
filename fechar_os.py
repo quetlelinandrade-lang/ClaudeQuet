@@ -662,98 +662,126 @@ def processar_os_awo(page, ev: dict, dry_run: bool, pw,
 
 
 # ──────────────────────────────────────────────
-# Worten: helpers
+# Worten: utilitários robustos
 # ──────────────────────────────────────────────
 
-def w_clicar(page, textos: list, timeout: int = 8000) -> bool:
+def _w_btn(page, textos: list, timeout: int = 8000) -> bool:
+    """Clica num botão/link pelo texto — tenta get_by_role primeiro."""
     for txt in textos:
+        for role in ("button", "link"):
+            try:
+                page.get_by_role(role, name=txt).first.click(timeout=timeout)
+                time.sleep(1)
+                return True
+            except Exception:
+                continue
         for sel in [f'button:has-text("{txt}")', f'a:has-text("{txt}")',
                     f'[role="button"]:has-text("{txt}")', f'input[value="{txt}"]']:
             try:
-                page.click(sel, timeout=timeout)
-                time.sleep(1.5)
+                page.locator(sel).first.click(timeout=timeout // 2)
+                time.sleep(1)
                 return True
             except Exception:
                 continue
     return False
 
 
-def w_selecionar(page, label: str, valor: str) -> bool:
-    resultado = page.evaluate(f"""
-        () => {{
-            const busca = '{label}'.toLowerCase();
-            const val   = '{valor}'.toLowerCase();
-            for (const el of document.querySelectorAll('label, span, p, div, th')) {{
-                if (!el.textContent.trim().toLowerCase().includes(busca)) continue;
-                let sel = el.parentElement?.querySelector('select') ||
-                          el.nextElementSibling;
-                if (!sel || sel.tagName !== 'SELECT') continue;
-                const opt = Array.from(sel.options).find(o =>
-                    o.text.toLowerCase().includes(val) || o.value.toLowerCase().includes(val));
-                if (!opt) return 'sem_opcao:' + Array.from(sel.options).map(o => o.text).join('|');
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLSelectElement.prototype, 'value').set;
-                setter.call(sel, opt.value);
-                sel.dispatchEvent(new Event('change', {{bubbles: true}}));
-                return 'ok:' + opt.text;
-            }}
-            return 'sem_label';
-        }}
-    """)
-    ok = isinstance(resultado, str) and resultado.startswith("ok:")
-    if not ok:
-        print(f"      AVISO dropdown '{label}': {resultado}")
-    return ok
-
-
-def w_preencher(page, label: str, valor: str) -> bool:
-    valor_js = valor.replace("\\", "\\\\").replace("`", "'").replace("\n", "\\n")
-    resultado = page.evaluate(f"""
-        () => {{
-            const busca = '{label}'.toLowerCase();
-            for (const lbl of document.querySelectorAll('label, span, p, div')) {{
-                if (!lbl.textContent.trim().toLowerCase().includes(busca)) continue;
-                let el = lbl.nextElementSibling ||
-                         lbl.parentElement?.querySelector('input, textarea');
-                if (!el || !['INPUT','TEXTAREA'].includes(el.tagName)) continue;
-                const setter = Object.getOwnPropertyDescriptor(
-                    Object.getPrototypeOf(el), 'value').set;
-                setter.call(el, `{valor_js}`);
-                el.dispatchEvent(new Event('input',  {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                return 'ok';
-            }}
-            return 'nao_encontrado';
-        }}
-    """)
-    return resultado == "ok"
-
-
-def w_clicar_opcao(page, texto: str) -> bool:
-    for sel in [f'label:has-text("{texto}")', f'button:has-text("{texto}")',
-                f'[class*="option"]:has-text("{texto}")', f'li:has-text("{texto}")',
-                f'[role="radio"]:has-text("{texto}")', f'[role="option"]:has-text("{texto}")']:
+def _w_opcao(page, texto: str, timeout: int = 4000) -> bool:
+    """Seleciona uma opção (select nativo, radio, label ou custom component)."""
+    # 1) Selects nativos — tenta em todos os selects da página
+    try:
+        for sel in page.locator("select").all():
+            opts = sel.evaluate("s => Array.from(s.options).map(o => o.text)")
+            match = next((o for o in opts if texto.lower() in o.lower()), None)
+            if match:
+                sel.select_option(label=match)
+                time.sleep(0.3)
+                return True
+    except Exception:
+        pass
+    # 2) Labels / radios / custom options
+    for sel in [
+        f'label:has-text("{texto}")',
+        f'[role="radio"]:has-text("{texto}")',
+        f'[role="option"]:has-text("{texto}")',
+        f'[class*="option"]:has-text("{texto}")',
+        f'[class*="radio"]:has-text("{texto}")',
+        f'li:has-text("{texto}")',
+        f'span:has-text("{texto}")',
+    ]:
         try:
-            page.click(sel, timeout=4000)
-            time.sleep(0.5)
+            page.locator(sel).first.click(timeout=timeout)
+            time.sleep(0.3)
             return True
         except Exception:
             continue
     return False
 
 
-def w_upload_arquivos(page, caminhos: list[str]) -> bool:
+def _w_dropdown(page, label_texto: str, valor: str) -> bool:
+    """Seleciona valor num dropdown próximo a um label (nativo ou custom)."""
+    resultado = page.evaluate(f"""
+        () => {{
+            const busca = {repr(label_texto.lower())};
+            const val   = {repr(valor.lower())};
+            const todos = Array.from(document.querySelectorAll('label,legend,span,p,div,th'));
+            for (const el of todos) {{
+                if (!el.textContent.trim().toLowerCase().includes(busca)) continue;
+                // procura select no próprio elemento, pai ou irmão seguinte
+                let s = el.querySelector('select')
+                     || el.nextElementSibling?.querySelector?.('select')
+                     || el.nextElementSibling;
+                if (!s || s.tagName !== 'SELECT') {{
+                    let p = el.parentElement;
+                    for (let i = 0; i < 4 && p; i++, p = p.parentElement) {{
+                        s = p.querySelector('select');
+                        if (s) break;
+                    }}
+                }}
+                if (!s || s.tagName !== 'SELECT') continue;
+                const opt = Array.from(s.options).find(o =>
+                    o.text.toLowerCase().includes(val) || o.value.toLowerCase().includes(val));
+                if (!opt) return 'sem_opcao:' + Array.from(s.options).map(o=>o.text).join('|');
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLSelectElement.prototype,'value').set;
+                setter.call(s, opt.value);
+                s.dispatchEvent(new Event('change',{{bubbles:true}}));
+                return 'ok:' + opt.text;
+            }}
+            return 'sem_label';
+        }}
+    """)
+    if isinstance(resultado, str) and resultado.startswith("ok:"):
+        return True
+    # Fallback: clica a opção diretamente (custom dropdowns)
+    return _w_opcao(page, valor)
+
+
+def _w_textarea(page, texto: str) -> bool:
+    """Preenche o primeiro textarea visível."""
+    try:
+        ta = page.locator("textarea").first
+        ta.wait_for(timeout=5000, state="visible")
+        ta.fill(texto)
+        ta.dispatch_event("input")
+        ta.dispatch_event("change")
+        return True
+    except Exception:
+        return False
+
+
+def _w_upload(page, caminhos: list) -> bool:
     if not caminhos:
         return True
-    for sel in ['input[type="file"]', '[class*="upload"] input[type="file"]',
+    for sel in ['input[type="file"]', 'input[accept*="image"]',
+                '[class*="upload"] input[type="file"]',
                 '[class*="drop"] input[type="file"]']:
         try:
-            page.set_input_files(sel, caminhos, timeout=5000)
+            page.locator(sel).first.set_input_files(caminhos, timeout=5000)
             time.sleep(3)
             return True
         except Exception:
             continue
-    print("    AVISO: campo de upload não encontrado")
     return False
 
 
@@ -763,75 +791,91 @@ def w_upload_arquivos(page, caminhos: list[str]) -> bool:
 
 def processar_os_worten(page, dados: DadosOS) -> bool:
     nome = dados.numero_processo or dados.texto[:40]
-    print(f"\n  Worten → Processo {nome} | Técnico: {dados.tecnico}")
+    print(f"\n  [{nome}] Worten — Técnico: {dados.tecnico}")
+
+    # Pasta para screenshots de diagnóstico
+    dbg = Path("debug_worten")
+    dbg.mkdir(exist_ok=True)
+
+    def ss(etapa: str):
+        try:
+            page.screenshot(path=str(dbg / f"{nome}_{etapa}.png"))
+        except Exception:
+            pass
 
     try:
-        # ── Passo 1: pesquisar processo ──
-        page.goto(f"{URL_WORTEN}?status=all", wait_until="domcontentloaded", timeout=20000)
-        # Aguarda a listagem aparecer antes de pesquisar
+        # ── PASSO 1: Pesquisar processo ──
+        print("    P1 Pesquisar...", end=" ", flush=True)
+        page.goto(f"{URL_WORTEN}?status=all", wait_until="domcontentloaded", timeout=30000)
+
+        # Espera o input aparecer (SPA pode demorar)
+        pesq = None
+        for sel in ['input[placeholder*="Pesquisar" i]', 'input[placeholder*="pesquis" i]',
+                    'input[type="search"]', '[class*="search"] input', 'input[type="text"]']:
+            try:
+                page.wait_for_selector(sel, timeout=8000, state="visible")
+                pesq = sel
+                break
+            except Exception:
+                continue
+
+        if pesq:
+            page.locator(pesq).first.fill(dados.numero_processo)
+            time.sleep(0.5)
+            page.keyboard.press("Enter")
+            time.sleep(2)
+        else:
+            ss("01_sem_pesquisa")
+            print("⚠ campo não encontrado")
+
+        # Clicar no cartão do processo (Worten mostra "# XXXXXX" nos cartões)
+        clicou = False
+        for padrao in [f"# {dados.numero_processo}", dados.numero_processo]:
+            for sel in [
+                f'*:has-text("{padrao}")',
+                f'a:has-text("{padrao}")',
+                f'[class*="card"]:has-text("{padrao}")',
+                f'[class*="service"]:has-text("{padrao}")',
+                f'li:has-text("{padrao}")',
+                f'tr:has-text("{padrao}")',
+            ]:
+                try:
+                    loc = page.locator(sel).first
+                    loc.wait_for(timeout=5000)
+                    loc.click()
+                    clicou = True
+                    time.sleep(3)
+                    break
+                except Exception:
+                    continue
+            if clicou:
+                break
+
+        if not clicou:
+            ss("01_sem_resultado")
+            print(f"\n    ERRO: processo não encontrado na listagem Worten")
+            dados.status = "erro"
+            dados.motivo = "não encontrado na pesquisa Worten"
+            return False
+
+        print("✓")
+        ss("01_processo_aberto")
+
+        # ── PASSO 2: Justificar check-in (se existir alerta) ──
+        print("    P2 Check-in...", end=" ", flush=True)
         try:
             page.wait_for_selector(
-                'input[placeholder*="pesquis" i], input[type="search"], '
-                'h1:has-text("Listagem"), h2:has-text("Listagem")',
-                timeout=10000
+                'button:has-text("JUSTIFICAR"), a:has-text("JUSTIFICAR"), '
+                'button:has-text("Justificar"), a:has-text("Justificar")',
+                timeout=4000, state="visible"
             )
-        except Exception:
-            pass
-        time.sleep(1)
+            _w_btn(page, ["JUSTIFICAR", "Justificar"])
+            time.sleep(1.5)
 
-        pesquisou = False
-        for sel in [
-            'input[placeholder*="pesquis" i]',
-            'input[type="search"]',
-            'input[placeholder*="número" i]',
-            'input[placeholder*="procur" i]',
-            'input[name*="search"]',
-            'input[name*="q"]',
-            'input[name*="pesquis"]',
-            '.search-input input',
-            '[class*="search"] input',
-            '[class*="filter"] input',
-            'form input[type="text"]',
-        ]:
-            try:
-                page.fill(sel, dados.numero_processo, timeout=3000)
-                page.keyboard.press("Enter")
-                time.sleep(2)
-                pesquisou = True
-                break
-            except Exception:
-                continue
-
-        if not pesquisou:
-            print(f"    AVISO: campo de pesquisa não encontrado — tentando URL direta")
-
-        for sel in [f'a:has-text("{dados.numero_processo}")',
-                    f'[class*="card"]:has-text("{dados.numero_processo}") a',
-                    f'tr:has-text("{dados.numero_processo}") a',
-                    f'li:has-text("{dados.numero_processo}") a']:
-            try:
-                page.click(sel, timeout=6000)
-                time.sleep(2)
-                break
-            except Exception:
-                continue
-
-        # ── Passo 2: Justificar check-in ──
-        tem_checkin = False
-        try:
-            page.wait_for_selector('button:has-text("JUSTIFICAR"), a:has-text("JUSTIFICAR")',
-                                   timeout=4000)
-            tem_checkin = True
-        except Exception:
-            pass
-
-        if tem_checkin:
-            w_clicar(page, ["JUSTIFICAR", "Justificar"])
-            time.sleep(1)
-            w_clicar_opcao(page, "Sim, efetuei a visita")
+            _w_opcao(page, "Sim, efetuei a visita")
             time.sleep(0.5)
 
-            # Data da visita (converter DD/MM/YYYY → YYYY-MM-DD)
+            # Data DD/MM/YYYY → YYYY-MM-DD
             data_iso = dados.data_visita
             if "/" in dados.data_visita:
                 p = dados.data_visita.split("/")
@@ -840,126 +884,132 @@ def processar_os_worten(page, dados: DadosOS) -> bool:
             for sel in ['input[type="date"]', 'input[type="datetime-local"]',
                         'input[name*="data"]', 'input[placeholder*="data" i]']:
                 try:
-                    page.fill(sel, data_iso, timeout=3000)
+                    page.locator(sel).first.fill(data_iso, timeout=3000)
                     break
                 except Exception:
                     continue
 
-            w_selecionar(page, "motivo", "Atualizei o pedido ao final do dia")
+            _w_dropdown(page, "motivo", "Atualizei o pedido ao final do dia")
             time.sleep(0.5)
-            w_clicar(page, ["AVANÇAR", "Avançar", "NEXT"])
+            _w_btn(page, ["AVANÇAR", "Avançar"])
             time.sleep(2)
+            print("✓")
+        except Exception:
+            print("— sem alerta de check-in")
 
-        # ── Passo 3: Atualizar pedido ──
-        w_clicar(page, ["ATUALIZAR PEDIDO", "Atualizar Pedido", "ATUALIZAR"])
+        ss("02_apos_checkin")
+
+        # ── PASSO 3: ATUALIZAR PEDIDO ──
+        print("    P3 Atualizar pedido...", end=" ", flush=True)
+        ok3 = _w_btn(page, ["ATUALIZAR PEDIDO", "Atualizar Pedido"])
         time.sleep(2)
+        print("✓" if ok3 else "⚠ não encontrado")
+        ss("03_apos_atualizar")
 
-        # ── Passo 4: Concluir Serviço (1ª vez) ──
-        w_clicar(page, ["Concluir Serviço", "CONCLUIR SERVIÇO", "Concluir serviço"])
-        time.sleep(1)
-        # Modal de confirmação
-        w_clicar(page, ["Serviço concluído", "Marcar pedido como finalizado",
-                        "Serviço concluído — Marcar pedido"])
+        # ── PASSO 4: Concluir Serviço 1ª vez ──
+        print("    P4 Concluir Serviço...", end=" ", flush=True)
+        _w_btn(page, ["Concluir Serviço", "CONCLUIR SERVIÇO"])
+        time.sleep(1.5)
+        _w_btn(page, ["Serviço concluído", "Marcar pedido como finalizado"])
         time.sleep(2)
+        print("✓")
+        ss("04_apos_concluir1")
 
-        # ── Passo 5: Preencher relatório ──
-        w_clicar(page, ["PREENCHER RELATÓRIO", "Preencher Relatório", "PREENCHER RELATORIO"])
+        # ── PASSO 5: Preencher Relatório ──
+        print("    P5 Preencher relatório...", end=" ", flush=True)
+        _w_btn(page, ["PREENCHER RELATÓRIO", "Preencher Relatório"])
         time.sleep(2)
+        ss("05_form_relatorio")
 
-        w_selecionar(page, "Resultado da Instalação", "Instalação Realizada")
+        _w_dropdown(page, "Resultado da Instalação", "Instalação Realizada")
         time.sleep(0.5)
-        w_selecionar(page, "Detalhe Complementar", "Equipamento e Instalação com sucesso")
+        _w_dropdown(page, "Detalhe Complementar", "Equipamento e Instalação com sucesso")
         time.sleep(0.5)
+        _w_textarea(page, dados.trabalhos_realizados)
+        time.sleep(0.3)
+        _w_opcao(page, "Sim")   # Realizou visita
+        time.sleep(0.3)
+        _w_opcao(page, "Não")   # Orçamento extra
+        time.sleep(0.3)
+        _w_dropdown(page, "Localização", "Na morada do Cliente")
+        time.sleep(0.3)
 
-        # Textarea "Justifique o resultado"
-        for sel in ['textarea[name*="justif"]', 'textarea[id*="justif"]',
-                    'textarea[placeholder*="justif" i]', 'textarea[placeholder*="resultado" i]']:
+        # Técnico Responsável
+        for sel in ['input[placeholder*="écnico" i]', 'input[name*="tecnico" i]',
+                    'input[id*="tecnico" i]', 'input[placeholder*="espons" i]']:
             try:
-                page.locator(sel).first.fill(dados.trabalhos_realizados, timeout=3000)
+                page.locator(sel).first.fill(dados.tecnico, timeout=3000)
                 break
             except Exception:
                 continue
-        else:
-            # Fallback: primeira textarea disponível
-            try:
-                page.locator("textarea").first.fill(dados.trabalhos_realizados, timeout=3000)
-            except Exception:
-                pass
 
-        w_clicar_opcao(page, "Sim")          # Realizou visita?
-        time.sleep(0.3)
-        w_clicar_opcao(page, "Não")          # Orçamento extra?
-        time.sleep(0.3)
-        w_selecionar(page, "Localização", "Na morada do Cliente")
-        time.sleep(0.3)
-        w_preencher(page, "Técnico Responsável", dados.tecnico)
-        time.sleep(0.3)
-
-        # Upload de imagens
+        # Fotos
         if dados.pasta and dados.pasta.exists():
             imgs = [str(p) for p in sorted(dados.pasta.iterdir())
                     if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")]
             if imgs:
-                w_upload_arquivos(page, imgs)
-                print(f"    {len(imgs)} foto(s) enviada(s)")
+                ok_up = _w_upload(page, imgs)
+                print(f"\n      {'✓' if ok_up else '⚠'} {len(imgs)} foto(s)", end="", flush=True)
 
-        w_clicar(page, ["ENVIAR RELATÓRIO", "Enviar Relatório", "ENVIAR RELATORIO"])
+        ss("05_form_preenchido")
+        _w_btn(page, ["ENVIAR RELATÓRIO", "Enviar Relatório"])
         time.sleep(3)
+        print(" ✓")
+        ss("05_relatorio_enviado")
 
-        # ── Passo 6: Anexar PDF ──
+        # ── PASSO 6: ANEXOS → PDF ──
         if dados.pdf_path and dados.pdf_path.exists():
+            print("    P6 Anexar PDF...", end=" ", flush=True)
             for sel in ['a:has-text("ANEXOS")', 'a:has-text("Anexos")',
-                        '[href*="anexo"]', 'li:has-text("ANEXOS") a']:
+                        'button:has-text("ANEXOS")', '[href*="anexo"]', 'li:has-text("ANEXOS") a']:
                 try:
-                    page.click(sel, timeout=5000)
+                    page.locator(sel).first.click(timeout=5000)
                     time.sleep(2)
                     break
                 except Exception:
                     continue
-
-            w_upload_arquivos(page, [str(dados.pdf_path)])
-            print(f"    PDF anexado: {dados.pdf_path.name}")
-            w_clicar(page, ["GUARDAR", "Guardar", "SALVAR", "Salvar"])
+            ok_pdf = _w_upload(page, [str(dados.pdf_path)])
             time.sleep(2)
+            _w_btn(page, ["GUARDAR", "Guardar"])
+            time.sleep(2)
+            print("✓" if ok_pdf else "⚠ upload falhou")
+            ss("06_pdf_anexado")
 
-        # ── Passo 7: Concluir Serviço (final) ──
-        w_clicar(page, ["CONCLUIR SERVIÇO", "Concluir Serviço", "CONCLUIR"])
+        # ── PASSO 7: CONCLUIR SERVIÇO (final) ──
+        print("    P7 Concluir (final)...", end=" ", flush=True)
+        _w_btn(page, ["CONCLUIR SERVIÇO", "Concluir Serviço"])
         time.sleep(2)
-        w_clicar(page, ["FECHAR", "Fechar", "CLOSE"])
+        _w_btn(page, ["FECHAR", "Fechar"])
         time.sleep(1)
+        print("✓")
+        ss("07_concluido")
 
-        # ── Passo 8: Enviar mensagem ao cliente ──
+        # ── PASSO 8: Enviar mensagem ao cliente ──
+        print("    P8 Mensagem ao cliente...", end=" ", flush=True)
         for sel in ['a:has-text("ENVIAR MENSAGEM")', 'a:has-text("Enviar Mensagem")',
-                    'button:has-text("ENVIAR MENSAGEM")', '[href*="mensagem"]']:
+                    'button:has-text("ENVIAR MENSAGEM")', '[href*="mensagem"]',
+                    'li:has-text("ENVIAR MENSAGEM") a']:
             try:
-                page.click(sel, timeout=5000)
+                page.locator(sel).first.click(timeout=5000)
                 time.sleep(2)
                 break
             except Exception:
                 continue
-
-        for sel in ['textarea', 'div[contenteditable="true"]', '[role="textbox"]']:
-            try:
-                page.locator(sel).first.fill(MENSAGEM_CLIENTE, timeout=3000)
-                break
-            except Exception:
-                continue
-
-        w_clicar(page, ["ENVIAR", "Enviar", "SEND", "Send"])
+        _w_textarea(page, MENSAGEM_CLIENTE)
+        time.sleep(0.5)
+        _w_btn(page, ["ENVIAR", "Enviar"])
         time.sleep(2)
+        print("✓")
 
-        print(f"    Worten: OS {nome} concluída ✓")
+        print(f"    ✓ OS {nome} CONCLUÍDA")
         dados.status = "concluida"
         return True
 
     except Exception as e:
-        print(f"    [ERRO Worten] {nome}: {e}")
+        print(f"\n    [ERRO] {nome}: {e}")
         dados.status = "erro"
         dados.motivo = f"Worten: {e}"
-        try:
-            page.screenshot(path=f"debug_worten_{nome}_{int(time.time())}.png")
-        except Exception:
-            pass
+        ss("ERRO")
         return False
 
 
