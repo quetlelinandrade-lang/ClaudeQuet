@@ -685,20 +685,86 @@ def _selecionar_dropdown_w(page, label_txt: str, valor_txt: str) -> bool:
         return False
 
 
-def _abrir_processo_worten(page, numero: str) -> bool:
-    page.goto(SERVICOS_URL, wait_until="networkidle")
+def _navegar_para_listagem(page) -> bool:
+    """Navega para worten.pt/resolve/servicos pelo caminho do menu."""
+    # Tenta directamente primeiro
+    page.goto(SERVICOS_URL, wait_until="networkidle", timeout=20000)
+    time.sleep(2)
+    if SERVICOS_URL in page.url or "resolve/servicos" in page.url:
+        # Verifica se a listagem está carregada (campo de pesquisa visível)
+        try:
+            page.locator("input[placeholder*='Pesquisar'], input[type='search']").first.wait_for(
+                state="visible", timeout=5000)
+            return True
+        except Exception:
+            pass
+
+    # Fallback: navega pelo menu  worten.pt → Menu → Serviços → Torna-te Parceiro
+    print("    A navegar pelo menu: worten.pt → Menu → Serviços → Torna-te Parceiro...")
+    page.goto("https://www.worten.pt/", wait_until="networkidle", timeout=20000)
     time.sleep(1)
+
+    # Abre Menu
+    for sel in ["button:has-text('Menu')", "[aria-label*='menu' i]", "text=Menu"]:
+        try:
+            page.locator(sel).first.click()
+            time.sleep(1)
+            break
+        except Exception:
+            continue
+
+    # Clica em Serviços
+    for sel in ["text=Serviços", "a:has-text('Serviços')"]:
+        try:
+            page.locator(sel).first.click()
+            time.sleep(1)
+            break
+        except Exception:
+            continue
+
+    # Clica em Torna-te Parceiro
+    for sel in ["text=Torna-te Parceiro", "text=TORNA-TE PARCEIRO",
+                "a:has-text('Torna-te')", "a:has-text('Parceiro')"]:
+        try:
+            page.locator(sel).first.click()
+            page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(2)
+            break
+        except Exception:
+            continue
+
+    if "resolve/servicos" not in page.url:
+        page.goto(SERVICOS_URL, wait_until="networkidle", timeout=20000)
+        time.sleep(2)
+
+    try:
+        page.locator("input[placeholder*='Pesquisar'], input[type='search']").first.wait_for(
+            state="visible", timeout=8000)
+        return True
+    except Exception:
+        return False
+
+
+def _abrir_processo_worten(page, numero: str) -> bool:
+    if not _navegar_para_listagem(page):
+        print(f"    ERRO: não foi possível carregar a listagem de serviços")
+        return False
+
+    # Pesquisar processo
     for sel in ["input[placeholder*='Pesquisar']", "input[type='search']",
                 "input[placeholder*='pesquisar']"]:
         try:
             campo = page.locator(sel).first
             campo.wait_for(state="visible", timeout=5000)
+            campo.clear()
             campo.fill(numero)
-            time.sleep(1.5)
+            time.sleep(2)
             break
         except Exception:
             continue
-    for sel in [f"text=#{numero}", f"text= {numero}"]:
+
+    # Clicar no cartão do processo
+    for sel in [f"text=#{numero}", f":text('#{numero}')"]:
         try:
             card = page.locator(sel).first
             card.wait_for(state="visible", timeout=8000)
