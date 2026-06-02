@@ -10,9 +10,8 @@ Fluxo:
   6. Relatório final no terminal
 
 Uso:
-    python fechar_os.py            # processa ontem (padrão)
+    python fechar_os.py            # processa o dia anterior (sempre)
     python fechar_os.py --dry-run  # só lista, sem alterar nada
-    python fechar_os.py --hoje     # processa hoje
     python fechar_os.py --so-awo   # só fecha no AWO, pula Worten
     python fechar_os.py --debug    # mostra eventos encontrados e sai
     python fechar_os.py --scan-form /work-orders/edit/XXXXX  # diagnóstico
@@ -1003,14 +1002,13 @@ def _imprimir_relatorio(candidatas: list, saltadas: list, erros_awo: list, label
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run",    action="store_true", help="Lista sem alterar")
-    parser.add_argument("--hoje",       action="store_true", help="Processa hoje")
     parser.add_argument("--debug",      action="store_true", help="Mostra eventos e sai")
     parser.add_argument("--so-awo",     action="store_true", help="Só AWO, pula Worten")
     parser.add_argument("--so-worten",  action="store_true", help="Relê AWO sem alterar e processa Worten")
     parser.add_argument("--scan-form",  metavar="URL",       help="Diagnóstico de formulário")
     args = parser.parse_args()
 
-    alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
+    alvo  = date.today() - timedelta(days=1)  # sempre o dia anterior
     label = alvo.strftime("%d/%m/%Y")
     if args.dry_run:    modo = "DRY RUN"
     elif args.so_awo:   modo = "SÓ AWO"
