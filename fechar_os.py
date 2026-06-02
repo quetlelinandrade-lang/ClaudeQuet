@@ -1,25 +1,35 @@
 """
-Automação AWO — Fecho de OS
+Automação AWO + Worten — Fecho completo de OS
 
 Fluxo:
-  1. Login manual no AWO (aguarda até 3 minutos)
-  2. Calendário do dia anterior → encontra OS com Estado=Realizado
-  3. Para cada OS: lê dados, baixa imagens, gera PDF, guarda relatorio.txt, muda Tipo→Fechado
-  4. Relatório final no terminal
+  FASE 1 — AWO
+    1. Login manual no AWO (aguarda até 3 minutos)
+    2. Calendário do dia anterior → encontra OS com Estado=Realizado
+    3. Para cada OS: lê dados, baixa imagens, gera PDF, guarda relatorio.txt, muda Tipo→Fechado
+
+  FASE 2 — Worten (automática, sem digitar números)
+    4. Login manual na Worten
+    5. Para cada processo fechado no AWO:
+       • Justificar check-in (se necessário)
+       • Atualizar Pedido → Concluir Serviço
+       • Preencher Relatório (campos + fotos)
+       • Anexos (PDF) → Guardar
+       • Concluir Serviço → Fechar modal
+       • Enviar mensagem fixa ao cliente
 
 Estrutura de pastas criada:
-    Documentos\FECHO\
-        {numero_processo}\
-            foto_01.jpg  (imagens descarregadas)
-            ...
+    Documents/FECHO/
+        {numero_processo}/
+            foto_01.jpg  ...
             {numero_processo}.pdf
             relatorio.txt
 
 Uso:
-    python fechar_os.py            # processa ontem (padrão)
-    python fechar_os.py --hoje     # processa hoje
-    python fechar_os.py --dry-run  # lista sem alterar
-    python fechar_os.py --debug    # mostra eventos encontrados e sai
+    python fechar_os.py                  # processa ontem (AWO + Worten)
+    python fechar_os.py --hoje           # processa hoje
+    python fechar_os.py --so-awo         # só fecha no AWO (sem Worten)
+    python fechar_os.py --dry-run        # lista sem alterar
+    python fechar_os.py --debug          # mostra eventos encontrados e sai
     python fechar_os.py --scan-form /work-orders/edit/XXXXX
 """
 
@@ -584,17 +594,345 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
 # Main
 # ──────────────────────────────────────────────
 
+# ──────────────────────────────────────────────
+# FASE 2 — Worten: funções de automação
+# ──────────────────────────────────────────────
+
+SERVICOS_URL     = "https://www.worten.pt/resolve/servicos"
+WORTEN_LOGIN_URL = "https://www.worten.pt/cliente/conta#/myLogin"
+
+MENSAGEM_CLIENTE = (
+    "Caro/a Cliente,\n\n"
+    "O serviço de instalação foi concluído. Foi-lhe enviado um sms/e-mail para avaliação, "
+    "pedimos a gentileza de responder com base no serviço prestado pelo técnico em sua morada, "
+    "pois sua opinião é muito importante para nós.\n\n"
+    "Com os melhores cumprimentos."
+)
+
+
+def aguardar_login_worten(page) -> None:
+    print("\n  ── FASE 2: Worten ──")
+    print("  Abrindo Worten — faça o login MANUALMENTE no navegador.")
+    print("  O script continuará automaticamente após o login.\n")
+    page.goto(WORTEN_LOGIN_URL, wait_until="domcontentloaded")
+    try:
+        page.wait_for_url(
+            lambda u: "myLogin" not in u and "login" not in u.lower(),
+            timeout=120000
+        )
+    except PlaywrightTimeout:
+        raise RuntimeError("Tempo esgotado aguardando login na Worten (2 min).")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
+    print("  Login Worten OK!\n")
+
+
+def _clicar_botao_w(page, *textos, timeout=8000) -> bool:
+    for txt in textos:
+        for sel in [f"button:has-text('{txt}')", f"a:has-text('{txt}')",
+                    f"span:has-text('{txt}')", f"[class*='btn']:has-text('{txt}')"]:
+            try:
+                loc = page.locator(sel).first
+                loc.wait_for(state="visible", timeout=timeout)
+                loc.click()
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def _clicar_texto_w(page, *textos, timeout=8000) -> bool:
+    for txt in textos:
+        try:
+            loc = page.locator(f"text={txt}").first
+            loc.wait_for(state="visible", timeout=timeout)
+            loc.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _selecionar_dropdown_w(page, label_txt: str, valor_txt: str) -> bool:
+    try:
+        result = page.evaluate(f"""
+            () => {{
+                const lbl = '{label_txt}'.toLowerCase();
+                const val = '{valor_txt}'.toLowerCase();
+                for (const el of document.querySelectorAll('label')) {{
+                    if (!el.textContent.trim().toLowerCase().includes(lbl)) continue;
+                    const forId = el.getAttribute('for');
+                    const sel = forId ? document.getElementById(forId)
+                                     : el.parentElement?.querySelector('select');
+                    if (!sel || sel.tagName !== 'SELECT') continue;
+                    const opt = Array.from(sel.options).find(o =>
+                        o.text.trim().toLowerCase().includes(val));
+                    if (!opt) return 'nenhuma_opcao';
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLSelectElement.prototype, 'value').set;
+                    setter.call(sel, opt.value);
+                    sel.dispatchEvent(new Event('input',  {{ bubbles: true }}));
+                    sel.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return 'ok';
+                }}
+                return 'label_nao_encontrado';
+            }}
+        """)
+        return result == "ok"
+    except Exception:
+        return False
+
+
+def _abrir_processo_worten(page, numero: str) -> bool:
+    page.goto(SERVICOS_URL, wait_until="networkidle")
+    time.sleep(1)
+    for sel in ["input[placeholder*='Pesquisar']", "input[type='search']",
+                "input[placeholder*='pesquisar']"]:
+        try:
+            campo = page.locator(sel).first
+            campo.wait_for(state="visible", timeout=5000)
+            campo.fill(numero)
+            time.sleep(1.5)
+            break
+        except Exception:
+            continue
+    for sel in [f"text=#{numero}", f"text= {numero}"]:
+        try:
+            card = page.locator(sel).first
+            card.wait_for(state="visible", timeout=8000)
+            card.click()
+            page.wait_for_load_state("networkidle")
+            time.sleep(1)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _justificar_checkin_w(page, dados: DadosOS) -> None:
+    try:
+        page.locator("text=JUSTIFICAR").first.wait_for(state="visible", timeout=4000)
+    except Exception:
+        return
+    print(f"    Check-in falhado — a justificar...")
+    page.locator("text=JUSTIFICAR").first.click()
+    time.sleep(1)
+    for sel in ["text=Sim, efetuei a visita", "label:has-text('Sim')"]:
+        try:
+            page.locator(sel).first.click()
+            break
+        except Exception:
+            continue
+    if dados.data_visita:
+        for sel in ["input[type='date']", "input[placeholder*='data' i]"]:
+            try:
+                page.locator(sel).first.fill(dados.data_visita)
+                break
+            except Exception:
+                continue
+    _selecionar_dropdown_w(page, "motivo", "atualizei o pedido ao final do dia")
+    for sel in ["text=Atualizei o pedido ao final do dia", "label:has-text('Atualizei')"]:
+        try:
+            page.locator(sel).first.click()
+            break
+        except Exception:
+            continue
+    time.sleep(0.5)
+    _clicar_botao_w(page, "AVANÇAR", "Avançar")
+    page.wait_for_load_state("networkidle")
+    time.sleep(1)
+
+
+def _atualizar_e_concluir_w(page, numero: str) -> bool:
+    if not _clicar_botao_w(page, "ATUALIZAR PEDIDO", "Atualizar Pedido"):
+        return False
+    time.sleep(1.5)
+    if not _clicar_texto_w(page, "Concluir Serviço", "CONCLUIR SERVIÇO"):
+        return False
+    time.sleep(1)
+    for sel in ["text=Serviço concluído", "label:has-text('Serviço concluído')",
+                "text=Marcar pedido como finalizado"]:
+        try:
+            page.locator(sel).first.click()
+            break
+        except Exception:
+            continue
+    time.sleep(0.5)
+    _clicar_botao_w(page, "CONFIRMAR", "Confirmar", "AVANÇAR", "Avançar", "OK")
+    page.wait_for_load_state("networkidle")
+    time.sleep(1)
+    return True
+
+
+def _preencher_relatorio_w(page, dados: DadosOS) -> bool:
+    if not _clicar_botao_w(page, "PREENCHER RELATÓRIO", "Preencher Relatório",
+                           "PREENCHER RELATORIO"):
+        return False
+    page.wait_for_load_state("networkidle")
+    time.sleep(1)
+
+    _selecionar_dropdown_w(page, "Resultado", "instalação realizada")
+    _selecionar_dropdown_w(page, "Resultado da Instalação", "instalação realizada")
+    _selecionar_dropdown_w(page, "Detalhe", "equipamento e instalação com sucesso")
+    _selecionar_dropdown_w(page, "Complementar", "equipamento e instalação com sucesso")
+
+    if dados.trabalhos_realizados:
+        for sel in ["textarea[placeholder*='justif' i]", "textarea[placeholder*='descri' i]",
+                    "textarea"]:
+            try:
+                ta = page.locator(sel).first
+                ta.wait_for(state="visible", timeout=3000)
+                ta.fill(dados.trabalhos_realizados)
+                break
+            except Exception:
+                continue
+
+    _selecionar_dropdown_w(page, "visita", "sim")
+    _selecionar_dropdown_w(page, "orçamento", "não")
+    _selecionar_dropdown_w(page, "recolha", "não")
+    _selecionar_dropdown_w(page, "localização", "morada do cliente")
+    _selecionar_dropdown_w(page, "Localização", "morada do cliente")
+
+    # Upload fotos
+    if dados.pasta:
+        fotos = sorted(dados.pasta.glob("foto_*.jpg")) + sorted(dados.pasta.glob("foto_*.png"))
+        if fotos:
+            print(f"    Upload de {len(fotos)} foto(s)...")
+            for sel in ["input[type='file']", "input[accept*='image']"]:
+                try:
+                    fi = page.locator(sel).first
+                    fi.wait_for(state="attached", timeout=5000)
+                    fi.set_input_files([str(f) for f in fotos])
+                    time.sleep(2)
+                    break
+                except Exception:
+                    continue
+
+    time.sleep(1)
+    if not _clicar_botao_w(page, "ENVIAR RELATÓRIO", "Enviar Relatório",
+                           "CONCLUIR RELATÓRIO", "Concluir Relatório"):
+        return False
+    page.wait_for_load_state("networkidle")
+    time.sleep(1.5)
+    return True
+
+
+def _anexar_pdf_w(page, dados: DadosOS) -> bool:
+    if not dados.pdf_path:
+        return True
+    if not _clicar_texto_w(page, "ANEXOS", "Anexos"):
+        return False
+    page.wait_for_load_state("networkidle")
+    time.sleep(1)
+    for sel in ["input[type='file']", "input[accept*='pdf' i]"]:
+        try:
+            fi = page.locator(sel).first
+            fi.wait_for(state="attached", timeout=5000)
+            fi.set_input_files(str(dados.pdf_path))
+            time.sleep(2)
+            break
+        except Exception:
+            continue
+    if not _clicar_botao_w(page, "GUARDAR", "Guardar"):
+        return False
+    page.wait_for_load_state("networkidle")
+    time.sleep(1.5)
+    return True
+
+
+def _concluir_servico_w(page) -> None:
+    _clicar_texto_w(page, "VER ESTADO DO SERVIÇO", "Estado do Serviço", timeout=3000)
+    time.sleep(0.5)
+    _clicar_botao_w(page, "ATUALIZAR PEDIDO", "Atualizar Pedido")
+    time.sleep(1)
+    _clicar_texto_w(page, "Concluir Serviço", "CONCLUIR SERVIÇO")
+    time.sleep(1)
+    for sel in ["text=Serviço concluído", "label:has-text('Serviço concluído')",
+                "text=Marcar pedido como finalizado"]:
+        try:
+            page.locator(sel).first.click()
+            break
+        except Exception:
+            continue
+    time.sleep(0.5)
+    _clicar_botao_w(page, "CONFIRMAR", "Confirmar", "CONCLUIR SERVIÇO", "Concluir Serviço")
+    page.wait_for_load_state("networkidle")
+    time.sleep(1.5)
+    _clicar_botao_w(page, "FECHAR", "Fechar", "OK")
+    time.sleep(1)
+
+
+def _enviar_mensagem_w(page, numero: str) -> None:
+    if not _clicar_texto_w(page, "ENVIAR MENSAGEM AO CLIENTE", "Enviar Mensagem ao Cliente"):
+        print(f"    AVISO: botão de mensagem não encontrado")
+        return
+    page.wait_for_load_state("networkidle")
+    time.sleep(1)
+    for sel in ["textarea[placeholder*='mensagem' i]", "input[placeholder*='mensagem' i]",
+                "textarea"]:
+        try:
+            campo = page.locator(sel).first
+            campo.wait_for(state="visible", timeout=8000)
+            campo.fill(MENSAGEM_CLIENTE)
+            time.sleep(0.5)
+            break
+        except Exception:
+            continue
+    for sel in ["button[type='submit']", "button:has(svg)", "[aria-label*='enviar' i]"]:
+        try:
+            page.locator(sel).last.click()
+            time.sleep(1)
+            break
+        except Exception:
+            continue
+
+
+def fechar_na_worten(page, dados: DadosOS) -> str:
+    numero = dados.numero_processo
+    if not numero:
+        return "ignorado:sem_numero"
+    print(f"\n  [{numero}] A fechar na Worten...")
+    try:
+        if not _abrir_processo_worten(page, numero):
+            return "erro:processo_nao_encontrado"
+        _justificar_checkin_w(page, dados)
+        if not _atualizar_e_concluir_w(page, numero):
+            return "erro:atualizar_concluir"
+        if not _preencher_relatorio_w(page, dados):
+            return "erro:relatorio"
+        if not _anexar_pdf_w(page, dados):
+            return "erro:anexos"
+        _concluir_servico_w(page)
+        _enviar_mensagem_w(page, numero)
+        print(f"  [{numero}] ✓ Processo fechado na Worten + mensagem enviada")
+        return "ok"
+    except Exception as e:
+        print(f"  [{numero}] Erro Worten: {e}")
+        try:
+            page.screenshot(path=f"debug_worten_{numero}.png")
+        except Exception:
+            pass
+        return f"erro:{e}"
+
+
+# ──────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fecho automático de OS no AWO")
+    parser = argparse.ArgumentParser(description="Fecho automático de OS no AWO + Worten")
     parser.add_argument("--dry-run",   action="store_true", help="Lista sem alterar")
     parser.add_argument("--hoje",      action="store_true", help="Processa hoje (padrão: ontem)")
     parser.add_argument("--debug",     action="store_true", help="Mostra eventos e sai")
+    parser.add_argument("--so-awo",    action="store_true", help="Só fecha no AWO (sem Worten)")
     parser.add_argument("--scan-form", metavar="URL",       help="Diagnóstico de formulário AWO")
     args = parser.parse_args()
 
     alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
     label = alvo.strftime("%d/%m/%Y")
-    modo  = "DRY RUN" if args.dry_run else "FECHO AWO"
+    modo  = "DRY RUN" if args.dry_run else ("SÓ AWO" if args.so_awo else "AWO + WORTEN")
 
     print(f"\n=== Fechar OS — {label} ({modo}) ===")
     PASTA_FECHO.mkdir(parents=True, exist_ok=True)
@@ -639,7 +977,7 @@ def main() -> None:
                 print("  Eventos encontrados mas sem URLs — use --debug para inspecionar.")
                 return
 
-            print(f"  {len(eventos)} OS encontradas em {label}. Processando...\n")
+            print(f"  {len(eventos)} OS encontradas em {label}. Processando AWO...\n")
 
             lista: list[DadosOS] = []
             for ev in eventos:
@@ -647,29 +985,62 @@ def main() -> None:
                 lista.append(d)
                 time.sleep(0.3)
 
-            # ── Relatório final ──
             fechadas  = [d for d in lista if d.status == "ok"]
             dry_list  = [d for d in lista if d.status == "para_fechar"]
             ignoradas = [d for d in lista if d.status == "ignorada"]
-            erros     = [d for d in lista if d.status == "erro"]
+            erros_awo = [d for d in lista if d.status == "erro"]
 
             print(f"\n{'='*44}")
-            print("         RELATÓRIO FINAL — AWO")
+            print("         RELATÓRIO — AWO")
             print(f"{'='*44}")
             print(f"  Data           : {label}")
-            print(f"  Total eventos  : {len(eventos)}")
             if args.dry_run:
                 print(f"  Para fechar    : {len(dry_list)}")
                 for d in dry_list:
                     print(f"    • {d.numero_processo or d.texto[:40]} | {d.tecnico}")
+                print(f"{'='*44}")
+                return
             else:
                 print(f"  Fechadas ✓     : {len(fechadas)}")
                 print(f"  Ignoradas      : {len(ignoradas)}")
-                if erros:
-                    print(f"  Erros          : {len(erros)}")
-                    for d in erros:
+                if erros_awo:
+                    print(f"  Erros          : {len(erros_awo)}")
+                    for d in erros_awo:
                         print(f"    ✗ {d.numero_processo or d.texto[:40]} → {d.motivo}")
-                print(f"\n  Pasta: {PASTA_FECHO}")
+                print(f"  Pasta: {PASTA_FECHO}")
+            print(f"{'='*44}")
+
+            # ── FASE 2: Worten ──
+            processos_para_worten = [d for d in fechadas if d.numero_processo]
+            if not processos_para_worten:
+                print("\n  Nenhum processo com número para fechar na Worten.")
+                return
+
+            if args.so_awo:
+                print(f"\n  --so-awo activo. Processos para fechar na Worten: "
+                      f"{[d.numero_processo for d in processos_para_worten]}")
+                return
+
+            print(f"\n  {len(processos_para_worten)} processo(s) a fechar na Worten: "
+                  f"{[d.numero_processo for d in processos_para_worten]}")
+
+            aguardar_login_worten(page)
+
+            resultados_worten = {"ok": [], "erro": []}
+            for d in processos_para_worten:
+                estado = fechar_na_worten(page, d)
+                if estado == "ok":
+                    resultados_worten["ok"].append(d.numero_processo)
+                else:
+                    resultados_worten["erro"].append(f"{d.numero_processo} ({estado})")
+                time.sleep(0.5)
+
+            print(f"\n{'='*44}")
+            print("         RELATÓRIO — WORTEN")
+            print(f"{'='*44}")
+            print(f"  Concluídos ✓   : {resultados_worten['ok']}")
+            if resultados_worten["erro"]:
+                print(f"  Com erros ✗    : {resultados_worten['erro']}")
             print(f"{'='*44}")
 
         except RuntimeError as exc:
