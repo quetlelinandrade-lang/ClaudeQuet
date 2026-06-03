@@ -154,25 +154,22 @@ def justificar_checkin(page: Page, data_visita: str) -> bool:
             'button:has-text("JUSTIFICAR"), a:has-text("JUSTIFICAR")',
             timeout=6000,
         )
-        time.sleep(1)
+        time.sleep(1.5)
     except Exception:
         return True  # Sem alerta de check-in falhado — continua normalmente
 
-    # Screenshot de diagnóstico antes de tentar seleccionar
-    page.screenshot(path="debug_checkin.png")
-
-    # Usa JavaScript para encontrar e clicar em qualquer elemento com "Sim"
+    # ── Passo 1: Seleccionar "Sim, efetuei a visita" ──
+    page.screenshot(path="debug_checkin_1_antes_radio.png")
     selecionou = page.evaluate("""
         () => {
-            // Tenta input[type="radio"]
+            // input[type="radio"] normal
             const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-            if (radios.length > 0) { radios[0].click(); return 'radio'; }
-
-            // Tenta qualquer elemento clicável com texto "Sim"
-            const todos = Array.from(document.querySelectorAll('label, span, div, button, li'));
+            if (radios.length > 0) { radios[0].click(); return 'radio-input'; }
+            // Elementos com texto "Sim"
+            const todos = Array.from(document.querySelectorAll('label, span, div, button, li, p'));
             for (const el of todos) {
                 const txt = el.textContent.trim();
-                if (txt === 'Sim, efetuei a visita' || txt === 'Sim' || txt.startsWith('Sim,')) {
+                if (txt === 'Sim, efetuei a visita' || txt.startsWith('Sim,') || txt === 'Sim') {
                     el.click();
                     return 'texto:' + txt;
                 }
@@ -180,46 +177,90 @@ def justificar_checkin(page: Page, data_visita: str) -> bool:
             return false;
         }
     """)
-    print(f"    Seleccionou radio: {selecionou}")
-    time.sleep(1)
+    print(f"    Radio: {selecionou}")
+    time.sleep(1.5)  # Aguarda campos adicionais aparecerem
 
-    # Data da visita
+    # ── Passo 2: Preencher data da visita ──
+    page.screenshot(path="debug_checkin_2_apos_radio.png")
     if data_visita:
         parts = data_visita.split("/")
         if len(parts) == 3:
             iso = f"{parts[2]}-{parts[1]}-{parts[0]}"
-            try:
-                page.locator('input[type="date"]').first.fill(iso)
-                time.sleep(0.4)
-            except Exception:
-                pass
+            # Tenta input[type="date"] e input[type="datetime-local"]
+            for sel in ['input[type="date"]', 'input[type="datetime-local"]']:
+                try:
+                    campo = page.locator(sel).first
+                    campo.fill(iso)
+                    campo.dispatch_event("change")
+                    time.sleep(0.5)
+                    print(f"    Data preenchida: {iso}")
+                    break
+                except Exception:
+                    continue
 
-    # Motivo fixo
-    for sel in [
-        'input[name*="motivo" i]',
-        'textarea[name*="motivo" i]',
-        'select[name*="motivo" i]',
-    ]:
-        try:
-            el = page.locator(sel).first
-            tag = el.evaluate("e => e.tagName.toLowerCase()")
-            if tag == "select":
-                page.select_option(sel, label=MOTIVO_CHECKIN, timeout=3000)
-            else:
-                el.fill(MOTIVO_CHECKIN)
-            time.sleep(0.4)
-            break
-        except Exception:
-            continue
+    # ── Passo 3: Preencher hora (se existir) ──
+    try:
+        hora_field = page.locator('input[type="time"]').first
+        hora_field.fill("18:00")
+        hora_field.dispatch_event("change")
+        time.sleep(0.4)
+    except Exception:
+        pass
 
-    # Aguarda o botão AVANÇAR ficar activo após seleccionar o radio
-    time.sleep(1.5)
+    # ── Passo 4: Seleccionar motivo "Atualizei o pedido ao final do dia" ──
+    # Pode ser select, input, textarea ou lista de opções clicáveis
+    motivo_preenchido = page.evaluate(f"""
+        () => {{
+            const texto = '{MOTIVO_CHECKIN}';
+
+            // Tenta select
+            for (const s of document.querySelectorAll('select')) {{
+                for (const o of s.options) {{
+                    if (o.text.toLowerCase().includes('atualizei') || o.text.toLowerCase().includes('final')) {{
+                        s.value = o.value;
+                        s.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return 'select:' + o.text;
+                    }}
+                }}
+            }}
+
+            // Tenta li/div/span clicável com esse texto
+            for (const el of document.querySelectorAll('li, div[role="option"], span, button')) {{
+                if (el.textContent.trim().toLowerCase().includes('atualizei') ||
+                    el.textContent.trim().toLowerCase().includes('final do dia')) {{
+                    el.click();
+                    return 'opcao:' + el.textContent.trim();
+                }}
+            }}
+
+            // Tenta textarea ou input de texto
+            for (const el of document.querySelectorAll('textarea, input[type="text"]')) {{
+                const lbl = el.labels ? Array.from(el.labels).map(l => l.textContent).join(' ').toLowerCase() : '';
+                if (lbl.includes('motivo') || lbl.includes('justif') || el.placeholder.toLowerCase().includes('motivo')) {{
+                    el.value = texto;
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return 'texto-livre';
+                }}
+            }}
+            return false;
+        }}
+    """)
+    print(f"    Motivo: {motivo_preenchido}")
+    time.sleep(1)
+
+    page.screenshot(path="debug_checkin_3_antes_avancar.png")
+
+    # ── Passo 5: Clicar AVANÇAR ──
+    time.sleep(1)
     try:
         btn = page.locator('button:has-text("AVANÇAR"), button:has-text("Avançar")').first
         btn.click(force=True, timeout=8000)
         time.sleep(2)
+        print("    AVANÇAR clicado.")
     except Exception as e:
         print(f"    AVISO: AVANÇAR não encontrado: {e}")
+        page.screenshot(path="debug_checkin_4_avancar_falhou.png")
         return False
 
     return True
