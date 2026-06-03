@@ -217,42 +217,51 @@ def ler_numero_processo(page) -> str:
 
 
 def ler_data_visita(page) -> tuple[str, str]:
-    """Devolve (data DD/MM/YYYY, hora HH:MM) lidas do AWO."""
+    """Devolve (data DD/MM/YYYY, hora HH:MM) do campo 'Data (Início - Fim)' do AWO.
+    Exemplo de valor: '02/06/2026 14:00 - 02/06/2026 15:00' → ('02/06/2026', '14:00')
+    """
     valor = page.evaluate("""
         () => {
-            for (const lbl of document.querySelectorAll('label')) {
-                const txt = lbl.textContent.trim().toLowerCase();
-                if (!txt.includes('início') && !txt.includes('inicio') && !txt.includes('data')) continue;
-                const forId = lbl.getAttribute('for');
-                let el = forId ? document.getElementById(forId)
-                               : lbl.parentElement?.querySelector('input, span');
-                if (!el) el = lbl.nextElementSibling;
-                if (!el) continue;
-                const v = (el.value || el.textContent || '').trim();
-                if (v) return v;
+            // Procura linha de tabela com label "Data" ou "Início"
+            for (const el of document.querySelectorAll('td, th, label, span, div')) {
+                const txt = el.textContent.trim().toLowerCase();
+                if (!txt.includes('início') && !txt.includes('inicio') && txt !== 'data') continue;
+                // Tenta célula seguinte (tabela)
+                const next = el.nextElementSibling || el.parentElement?.nextElementSibling?.querySelector('td');
+                if (next) {
+                    const v = next.textContent.trim();
+                    if (v && v.match(/\\d{2}[\\/\\-]\\d{2}[\\/\\-]\\d{4}/)) return v;
+                }
             }
+            // Fallback: input datetime
             const d = document.querySelector('input[type="datetime-local"], input[type="date"]');
             return d ? d.value : '';
         }
     """) or ""
 
+    # Formato esperado: "DD/MM/YYYY HH:MM - DD/MM/YYYY HH:MM"
+    # Usa apenas a parte de início (antes do " - ")
+    inicio = valor.split(" - ")[0].strip()
+
+    data = ""
     hora = ""
-    if "T" in valor:
-        partes = valor.split("T")
-        hora  = partes[1][:5] if len(partes) > 1 else ""
-        valor = partes[0]
-    elif " " in valor and ":" in valor:
-        partes = valor.split(" ")
-        hora  = partes[1][:5]
-        valor = partes[0]
 
-    # Normaliza data para DD/MM/YYYY
-    if "-" in valor and len(valor) >= 10:
-        p = valor[:10].split("-")
+    # DD/MM/YYYY HH:MM
+    if "/" in inicio and " " in inicio:
+        partes = inicio.split(" ")
+        data   = partes[0]
+        hora   = partes[1][:5] if len(partes) > 1 else ""
+    # YYYY-MM-DDTHH:MM
+    elif "T" in inicio:
+        partes = inicio.split("T")
+        hora   = partes[1][:5] if len(partes) > 1 else ""
+        p      = partes[0].split("-")
         if len(p) == 3:
-            valor = f"{p[2]}/{p[1]}/{p[0]}"
+            data = f"{p[2]}/{p[1]}/{p[0]}"
+    else:
+        data = inicio
 
-    return valor, hora
+    return data, hora
 
 
 def ler_trabalhos_realizados(page) -> str:
