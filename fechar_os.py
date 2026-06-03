@@ -293,60 +293,69 @@ def baixar_imagens(page, pasta: Path) -> int:
     # Recolher URLs APENAS do painel activo da tab (não de toda a página)
     img_urls = page.evaluate("""
         () => {
-            // Tenta encontrar o painel activo da tab de imagens
-            const paineis = [
-                // Painel activo genérico
-                '.tab-pane.active img, .tab-content .active img',
-                // Painel com imagens/galeria
-                '[class*="imag"] img, [class*="photo"] img, [class*="foto"] img, [class*="galeri"] img',
-                // Upload/anexos
-                '[class*="upload"] img, [class*="attach"] img, [class*="file"] img',
-                // Containers de conteúdo (excluindo layout)
-                'main img, .content img, [class*="content"] img, article img',
-            ];
+            const vistos     = new Set();
+            const resultado  = [];
 
+            // Selectores UI do AWO (navbar topo + sidebar esquerda)
+            const uiSels = 'header, nav, footer, aside, ' +
+                           '.navbar, .sidebar, .topbar, .top-bar, ' +
+                           '[class*="navbar"], [class*="sidebar"], ' +
+                           '[class*="topbar"], [class*="top-bar"], ' +
+                           '[class*="logo"], [class*="brand"]';
+
+            // Nomes de ficheiro que indicam UI (não fotos de trabalho)
+            const excluirNome = ['logo', 'icon', 'favicon', 'avatar',
+                                 'placeholder', 'sprite', 'default'];
+
+            // 1.ª tentativa: imagens dentro da secção "Imagens e Documentos"
+            // O AWO usa um h2/h3/div com esse texto + imagens a seguir
             let imgs = [];
-            for (const sel of paineis) {
-                const found = Array.from(document.querySelectorAll(sel));
-                if (found.length > 0) { imgs = found; break; }
+            for (const el of document.querySelectorAll('h1,h2,h3,h4,div,section')) {
+                const txt = el.textContent.trim().toLowerCase();
+                if (txt.includes('imagens') && txt.includes('document')) {
+                    // Apanha as imagens no container desta secção ou no pai
+                    const container = el.closest('section, .card, .panel, main') || el.parentElement;
+                    if (container) {
+                        imgs = Array.from(container.querySelectorAll('img'));
+                        if (imgs.length > 0) break;
+                    }
+                }
             }
 
-            // Fallback: todas as imagens da página que não sejam UI
+            // 2.ª tentativa: tab com hash #tab_images ou painel activo
+            if (imgs.length === 0) {
+                const hash = window.location.hash;
+                if (hash) {
+                    const panel = document.querySelector(hash);
+                    if (panel) imgs = Array.from(panel.querySelectorAll('img'));
+                }
+            }
+
+            // 3.ª tentativa: main ou #app, excluindo UI
+            if (imgs.length === 0) {
+                const main = document.querySelector('main, #app, #content, .main-content');
+                if (main) imgs = Array.from(main.querySelectorAll('img'));
+            }
+
+            // Fallback: todas as imagens
             if (imgs.length === 0) {
                 imgs = Array.from(document.querySelectorAll('img'));
             }
-
-            const vistos  = new Set();
-            // Apenas palavras que aparecem no NOME DO FICHEIRO (não no domínio)
-            const excluirNome = ['logo', 'icon', 'favicon', 'avatar',
-                                 'placeholder', 'sprite', 'brand', 'navbar', 'header'];
-            const uiSels  = 'header, nav, footer, .navbar, .header, .sidebar, ' +
-                            '.menu, .topbar, [class*="logo"], [class*="header"], ' +
-                            '[class*="navbar"], [class*="brand"], [class*="topbar"]';
-            const resultado = [];
 
             for (const img of imgs) {
                 const src = img.src || img.getAttribute('data-src') || '';
                 if (!src || src.startsWith('data:') || vistos.has(src)) continue;
 
-                // Exclui imagens em containers de UI estrutural
+                // Exclui imagens dentro de navbar/sidebar/header
                 if (img.closest(uiSels)) continue;
 
-                // Exclui por palavras-chave no NOME DO FICHEIRO (não no domínio)
-                const nomeFicheiro = src.toLowerCase().split('/').pop().split('?')[0];
-                if (excluirNome.some(k => nomeFicheiro.includes(k))) continue;
+                // Exclui pelo nome do ficheiro
+                const nome = src.toLowerCase().split('/').pop().split('?')[0];
+                if (excluirNome.some(k => nome.includes(k))) continue;
 
-                // Exclui imagens muito pequenas
-                if (img.naturalWidth  > 0 && img.naturalWidth  < 80) continue;
-                if (img.naturalHeight > 0 && img.naturalHeight < 80) continue;
-
-                // Exclui ícones quadrados pequenos (logos renderizados grandes passam)
-                if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                    const w = img.naturalWidth, h = img.naturalHeight;
-                    const ratio = w / h;
-                    // Logo AWO-Soft: quadrada, azul, ~200px — excluir quadradas até 300x300
-                    if (w <= 300 && h <= 300 && ratio > 0.75 && ratio < 1.33) continue;
-                }
+                // Exclui imagens muito pequenas (ícones)
+                if (img.naturalWidth  > 0 && img.naturalWidth  < 100) continue;
+                if (img.naturalHeight > 0 && img.naturalHeight < 100) continue;
 
                 vistos.add(src);
                 resultado.push(src);

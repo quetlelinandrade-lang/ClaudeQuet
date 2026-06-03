@@ -1,98 +1,106 @@
 /**
- * Testa o filtro JS do fechar_os.py contra uma página que replica
- * a estrutura real do AWO-Soft (logo quadrada + fotos de trabalho)
+ * Testa o filtro JS do fechar_os.py contra HTML que replica
+ * a estrutura REAL do AWO-Soft (suporteprime.awo-soft.com)
  */
 const { JSDOM } = require('jsdom');
 const fs = require('fs');
 
-// ── Extrai o bloco JS do fechar_os.py ─────────────────────────────────
 const src = fs.readFileSync('fechar_os.py', 'utf8');
 const match = src.match(/img_urls = page\.evaluate\("""\s*([\s\S]*?)\s*"""\s*\) or \[\]/) ||
               src.match(/img_urls = page\.evaluate\("""\s*([\s\S]*?)\s*"""\) or \[\]/);
 if (!match) { console.error('Não encontrei o bloco JS'); process.exit(1); }
 const JS_FILTRO = match[1];
 
-// ── HTML que replica estrutura AWO-Soft ───────────────────────────────
+// HTML que replica exactamente a estrutura do AWO-Soft visível no screenshot
 const html = `<!DOCTYPE html><html><body>
-  <!-- Logo AWO-Soft na sidebar (DEVE SER EXCLUÍDA) -->
-  <aside class="sidebar brand logo">
-    <img id="logo-awo" src="https://app.awo-soft.com/assets/logo.png"
-         data-w="200" data-h="200">
+
+  <!-- NAVBAR topo (logo AWO deve ser EXCLUÍDA) -->
+  <nav class="navbar topbar">
+    <img id="logo-awo"
+         src="https://suporteprime.awo-soft.com/assets/img/logo-awo.png"
+         data-w="120" data-h="40">
+  </nav>
+
+  <!-- SIDEBAR esquerda (ícones de navegação, devem ser EXCLUÍDOS) -->
+  <aside class="sidebar">
+    <img id="icon-dashboard"
+         src="https://suporteprime.awo-soft.com/assets/icons/dashboard.svg"
+         data-w="24" data-h="24">
+    <img id="icon-clientes"
+         src="https://suporteprime.awo-soft.com/assets/icons/clients.svg"
+         data-w="24" data-h="24">
   </aside>
 
-  <!-- Cabeçalho com logo (DEVE SER EXCLUÍDA) -->
-  <header>
-    <img id="logo-header" src="https://app.awo-soft.com/img/awosoft-brand.svg"
-         data-w="150" data-h="80">
-  </header>
-
-  <!-- Painel activo da tab de Imagens (DEVEM SER INCLUÍDAS) -->
+  <!-- CONTEÚDO PRINCIPAL -->
   <main>
-    <div class="tab-pane active" id="tab-imagens">
-      <div class="gallery">
-        <img id="foto1" src="https://app.awo-soft.com/storage/uploads/foto_trabalho_1.jpg"
-             data-w="1200" data-h="900">
-        <img id="foto2" src="https://app.awo-soft.com/storage/uploads/foto_trabalho_2.jpg"
-             data-w="800" data-h="600">
-        <img id="foto3" src="https://app.awo-soft.com/storage/uploads/foto_trabalho_3.jpg"
-             data-w="1024" data-h="768">
+    <!-- Tabs: Ficha | Periodicidade | Serviços | Custos | Imagens/Doc. | Intervenções -->
+    <div id="tab_images">
+
+      <!-- Secção "Imagens e Documentos" (estrutura real do AWO) -->
+      <h2>Imagens e Documentos</h2>
+
+      <div class="images-grid">
+        <!-- 3 fotos reais de trabalho (devem ser INCLUÍDAS) -->
+        <div>
+          <p>Nome: .</p>
+          <img id="foto1"
+               src="https://suporteprime.awo-soft.com/storage/work-orders/14437/foto1.jpg"
+               data-w="800" data-h="600">
+        </div>
+        <div>
+          <p>Nome: .</p>
+          <img id="foto2"
+               src="https://suporteprime.awo-soft.com/storage/work-orders/14437/foto2.jpg"
+               data-w="1200" data-h="900">
+        </div>
+        <div>
+          <p>Nome: .</p>
+          <img id="foto3"
+               src="https://suporteprime.awo-soft.com/storage/work-orders/14437/foto3.jpg"
+               data-w="1024" data-h="768">
+        </div>
       </div>
+
     </div>
   </main>
+
 </body></html>`;
 
-const dom = new JSDOM(html, { runScripts: 'dangerously' });
-const { document, Object: Obj } = dom.window;
+const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'https://suporteprime.awo-soft.com/work-orders/view/14437#tab_images' });
+const { document: doc, Object: Obj } = dom.window;
 
-// Simula naturalWidth/naturalHeight via data attributes
-document.querySelectorAll('img').forEach(img => {
+// Simula naturalWidth/naturalHeight
+doc.querySelectorAll('img').forEach(img => {
   const w = parseInt(img.getAttribute('data-w') || '0');
   const h = parseInt(img.getAttribute('data-h') || '0');
   Obj.defineProperty(img, 'naturalWidth',  { get: () => w, configurable: true });
   Obj.defineProperty(img, 'naturalHeight', { get: () => h, configurable: true });
 });
 
-// Corre o filtro JS
-const fn   = new dom.window.Function(JS_FILTRO.replace(/^\s*\(\)\s*=>\s*\{/, '').replace(/\}$/, '').replace(/return resultado;/, 'return resultado;'));
-// Usa eval via jsdom para correr a arrow function completa
 const resultado = dom.window.eval(`(${JS_FILTRO})()`);
 
-// ── Verificações ──────────────────────────────────────────────────────
-console.log('\n=== Teste do filtro de imagens AWO ===\n');
-console.log(`  Total imagens na página: 5`);
-console.log(`  Retornadas pelo filtro : ${resultado.length}`);
-resultado.forEach(u => console.log(`    ✓ ${u}`));
+console.log('\n=== Teste filtro imagens AWO (estrutura real) ===\n');
+console.log(`  Imagens na página : 5 (1 logo navbar + 2 ícones sidebar + 3 fotos)`);
+console.log(`  Retornadas         : ${resultado.length}`);
+resultado.forEach(u => console.log(`    ✓ ${u.split('/').slice(-2).join('/')}`));
 
 let ok = true;
 
-// Logo AWO (sidebar.brand.logo, 200x200 quadrada) deve ser excluída
-const temLogoAwo = resultado.includes('https://app.awo-soft.com/assets/logo.png');
-if (temLogoAwo) {
-  console.log('\n  ✗ FALHA: logo AWO-Soft (200x200 quadrada) foi incluída!');
-  ok = false;
-} else {
-  console.log('\n  ✓ Logo AWO-Soft excluída correctamente');
-}
+const temLogo = resultado.some(u => u.includes('logo-awo') || u.includes('logo'));
+if (temLogo) { console.log('\n  ✗ FALHA: logo AWO incluída!'); ok = false; }
+else          { console.log('\n  ✓ Logo AWO excluída (navbar)'); }
 
-// Logo do header deve ser excluída
-const temLogoHeader = resultado.includes('https://app.awo-soft.com/img/awosoft-brand.svg');
-if (temLogoHeader) {
-  console.log('  ✗ FALHA: logo do header foi incluída!');
-  ok = false;
-} else {
-  console.log('  ✓ Logo do header excluída correctamente');
-}
+const temIcones = resultado.some(u => u.includes('icons/'));
+if (temIcones) { console.log('  ✗ FALHA: ícones sidebar incluídos!'); ok = false; }
+else           { console.log('  ✓ Ícones sidebar excluídos'); }
 
-// 3 fotos de trabalho devem ser incluídas
-const fotos = resultado.filter(u => u.includes('/storage/uploads/'));
+const fotos = resultado.filter(u => u.includes('storage/work-orders'));
 if (fotos.length !== 3) {
-  console.log(`  ✗ FALHA: esperadas 3 fotos de trabalho, obtidas ${fotos.length}`);
+  console.log(`  ✗ FALHA: esperadas 3 fotos, obtidas ${fotos.length}`);
   ok = false;
 } else {
-  console.log(`  ✓ ${fotos.length} fotos de trabalho incluídas correctamente`);
+  console.log(`  ✓ ${fotos.length} fotos de trabalho incluídas`);
 }
 
-console.log(ok
-  ? '\n  TODOS OS TESTES PASSARAM ✓\n'
-  : '\n  ALGUNS TESTES FALHARAM ✗\n');
+console.log(ok ? '\n  TODOS OS TESTES PASSARAM ✓\n' : '\n  ALGUNS TESTES FALHARAM ✗\n');
 process.exit(ok ? 0 : 1);
