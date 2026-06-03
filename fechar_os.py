@@ -159,7 +159,18 @@ def extrair_urls_eventos(page, seletor: str) -> list[dict]:
                 if (!href || vistos.has(href)) return;
                 vistos.add(href);
                 const texto = e.textContent.trim().replace(/\\s+/g, ' ').substring(0, 80);
-                resultado.push({{ href, texto }});
+                // Extrai hora do atributo data-start ou do texto do evento (ex: "8:00 - 9:00")
+                const dataStart = e.getAttribute('data-start') || e.closest('[data-start]')?.getAttribute('data-start') || '';
+                let hora = '';
+                if (dataStart) {{
+                    const m = dataStart.match(/T(\\d{{2}}:\\d{{2}})/);
+                    if (m) hora = m[1];
+                }}
+                if (!hora) {{
+                    const m = texto.match(/(\\d{{1,2}}:\\d{{2}})/);
+                    if (m) hora = m[1].padStart(5, '0');
+                }}
+                resultado.push({{ href, texto, hora }});
             }});
             return resultado;
         }}
@@ -509,7 +520,8 @@ def scan_form(page, url: str) -> None:
 
 def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
     dados    = DadosOS(href=ev["href"], texto=ev["texto"])
-    dados.awo_id = ev["href"].rstrip("/").rsplit("/", 1)[-1]
+    dados.awo_id    = ev["href"].rstrip("/").rsplit("/", 1)[-1]
+    dados.hora_visita = ev.get("hora", "")
     full_url = ev["href"] if ev["href"].startswith("http") else f"{URL_AWO}{ev['href']}"
     titulo   = ev["texto"][:60] or ev["href"]
 
