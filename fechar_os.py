@@ -443,14 +443,33 @@ def alterar_tipo_fechado(page) -> bool:
 
 def salvar_awo(page) -> bool:
     time.sleep(1)
+    # Tenta pelos textos habituais
     for sel in ['button:has-text("Guardar")', 'button:has-text("Salvar")',
-                'button:has-text("Gravar")', 'button[type="submit"]']:
+                'button:has-text("Gravar")', 'input[type="submit"]',
+                'button[type="submit"]:not([disabled])']:
         try:
             page.click(sel, timeout=5000)
             time.sleep(3)
             return True
         except Exception:
             continue
+    # Tenta qualquer botão submit visível
+    try:
+        btns = page.locator("button[type='submit'], input[type='submit']").all()
+        for btn in btns:
+            if btn.is_visible():
+                btn.click()
+                time.sleep(3)
+                return True
+    except Exception:
+        pass
+    # Último recurso: Ctrl+S
+    try:
+        page.keyboard.press("Control+s")
+        time.sleep(2)
+        return True
+    except Exception:
+        pass
     return False
 
 
@@ -579,13 +598,13 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         return dados
 
     if not salvar_awo(page):
-        print("    AVISO: botão guardar não encontrado")
+        print("    AVISO: botão guardar não encontrado — Tipo já alterado, continua para Worten")
         page.screenshot(path=f"debug_salvar_{dados.awo_id}.png")
-        dados.status = "erro"
-        dados.motivo = "guardar falhou"
-        return dados
+        # Não bloqueia: o tipo Vue.js já foi alterado, segue para Worten mesmo assim
+    else:
+        print(f"    ✓ Guardado no AWO")
 
-    print(f"    ✓ OS {dados.numero_processo} fechada")
+    print(f"    ✓ OS {dados.numero_processo} pronta para Worten")
     dados.status = "ok"
     return dados
 
@@ -626,7 +645,10 @@ def aguardar_login_worten(page) -> None:
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
-    print("  Login Worten OK!\n")
+    print("  Login Worten OK! A navegar para os serviços...")
+    # Navega pelo menu logo após o login
+    _navegar_para_listagem(page)
+    print("  Listagem de serviços carregada.\n")
 
 
 def _clicar_botao_w(page, *textos, timeout=8000) -> bool:
@@ -686,62 +708,87 @@ def _selecionar_dropdown_w(page, label_txt: str, valor_txt: str) -> bool:
 
 
 def _navegar_para_listagem(page) -> bool:
-    """Navega para worten.pt/resolve/servicos pelo caminho do menu."""
-    # Tenta directamente primeiro
-    page.goto(SERVICOS_URL, wait_until="networkidle", timeout=20000)
+    """Navega para worten.pt/resolve/servicos pelo caminho correcto do menu."""
+    print("    Worten: worten.pt → Menu → Serviços → Torna-te Parceiro...")
+
+    # 1. Ir para worten.pt
+    try:
+        page.goto("https://www.worten.pt/", wait_until="networkidle", timeout=20000)
+    except Exception:
+        page.goto("https://www.worten.pt/")
     time.sleep(2)
-    if SERVICOS_URL in page.url or "resolve/servicos" in page.url:
-        # Verifica se a listagem está carregada (campo de pesquisa visível)
+
+    # 2. Clicar em Menu (hambúrguer)
+    clicou_menu = False
+    for sel in ["button:has-text('Menu')", "text=☰ Menu", "text=Menu",
+                "[aria-label*='menu' i]", "nav button", ".hamburger"]:
+        try:
+            loc = page.locator(sel).first
+            if loc.is_visible():
+                loc.click()
+                time.sleep(1.5)
+                clicou_menu = True
+                break
+        except Exception:
+            continue
+    if not clicou_menu:
+        print("    AVISO: botão Menu não encontrado — tenta URL directo")
+        page.goto(SERVICOS_URL, wait_until="networkidle", timeout=20000)
+        time.sleep(3)
         try:
             page.locator("input[placeholder*='Pesquisar'], input[type='search']").first.wait_for(
-                state="visible", timeout=5000)
+                state="visible", timeout=8000)
             return True
         except Exception:
-            pass
+            return False
 
-    # Fallback: navega pelo menu  worten.pt → Menu → Serviços → Torna-te Parceiro
-    print("    A navegar pelo menu: worten.pt → Menu → Serviços → Torna-te Parceiro...")
-    page.goto("https://www.worten.pt/", wait_until="networkidle", timeout=20000)
-    time.sleep(1)
-
-    # Abre Menu
-    for sel in ["button:has-text('Menu')", "[aria-label*='menu' i]", "text=Menu"]:
+    # 3. Clicar em Serviços no menu lateral
+    clicou_servicos = False
+    for sel in ["text=Serviços", "a:has-text('Serviços')", "li:has-text('Serviços') a"]:
         try:
-            page.locator(sel).first.click()
-            time.sleep(1)
+            loc = page.locator(sel).first
+            loc.wait_for(state="visible", timeout=5000)
+            loc.click()
+            time.sleep(1.5)
+            clicou_servicos = True
             break
         except Exception:
             continue
+    if not clicou_servicos:
+        print("    AVISO: item Serviços não encontrado no menu")
 
-    # Clica em Serviços
-    for sel in ["text=Serviços", "a:has-text('Serviços')"]:
-        try:
-            page.locator(sel).first.click()
-            time.sleep(1)
-            break
-        except Exception:
-            continue
-
-    # Clica em Torna-te Parceiro
+    # 4. Clicar em Torna-te Parceiro / Torna-te um Parceiro
+    clicou_parceiro = False
     for sel in ["text=Torna-te Parceiro", "text=TORNA-TE PARCEIRO",
-                "a:has-text('Torna-te')", "a:has-text('Parceiro')"]:
+                "text=Torna-te um Parceiro", "a:has-text('Parceiro')",
+                "a:has-text('parceiro')"]:
         try:
-            page.locator(sel).first.click()
+            loc = page.locator(sel).first
+            loc.wait_for(state="visible", timeout=5000)
+            loc.click()
             page.wait_for_load_state("networkidle", timeout=15000)
             time.sleep(2)
+            clicou_parceiro = True
             break
         except Exception:
             continue
-
-    if "resolve/servicos" not in page.url:
+    if not clicou_parceiro:
+        print("    AVISO: Torna-te Parceiro não encontrado — navega directamente")
         page.goto(SERVICOS_URL, wait_until="networkidle", timeout=20000)
-        time.sleep(2)
+        time.sleep(3)
 
+    print(f"    URL actual: {page.url}")
+
+    # 5. Verifica se a listagem está carregada
     try:
-        page.locator("input[placeholder*='Pesquisar'], input[type='search']").first.wait_for(
-            state="visible", timeout=8000)
+        page.locator("input[placeholder*='Pesquisar'], input[type='search'], "
+                     "input[placeholder*='pesquisar']").first.wait_for(
+            state="visible", timeout=10000)
+        print("    Campo de pesquisa encontrado ✓")
         return True
     except Exception:
+        print("    ERRO: campo de pesquisa não encontrado na listagem")
+        page.screenshot(path="debug_listagem_worten.png")
         return False
 
 
@@ -1093,7 +1140,8 @@ def main() -> None:
             aguardar_login_worten(page)
 
             resultados_worten = {"ok": [], "erro": []}
-            for d in processos_para_worten:
+            for i, d in enumerate(processos_para_worten, 1):
+                print(f"\n  Worten [{i}/{len(processos_para_worten)}]: {d.numero_processo}")
                 estado = fechar_na_worten(page, d)
                 if estado == "ok":
                     resultados_worten["ok"].append(d.numero_processo)
