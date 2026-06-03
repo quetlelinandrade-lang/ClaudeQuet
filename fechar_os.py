@@ -55,6 +55,7 @@ class DadosOS:
     awo_id: str = ""
     numero_processo: str = ""
     data_visita: str = ""
+    hora_visita: str = ""
     tecnico: str = ""
     trabalhos_realizados: str = ""
     pasta: Optional[Path] = None
@@ -204,7 +205,8 @@ def ler_numero_processo(page) -> str:
     return valor.strip()
 
 
-def ler_data_visita(page) -> str:
+def ler_data_visita(page) -> tuple[str, str]:
+    """Devolve (data DD/MM/YYYY, hora HH:MM) lidas do AWO."""
     valor = page.evaluate("""
         () => {
             for (const lbl of document.querySelectorAll('label')) {
@@ -218,19 +220,28 @@ def ler_data_visita(page) -> str:
                 const v = (el.value || el.textContent || '').trim();
                 if (v) return v;
             }
-            const d = document.querySelector('input[type="date"], input[type="datetime-local"]');
+            const d = document.querySelector('input[type="datetime-local"], input[type="date"]');
             return d ? d.value : '';
         }
     """) or ""
+
+    hora = ""
     if "T" in valor:
-        valor = valor.split("T")[0]
+        partes = valor.split("T")
+        hora  = partes[1][:5] if len(partes) > 1 else ""
+        valor = partes[0]
+    elif " " in valor and ":" in valor:
+        partes = valor.split(" ")
+        hora  = partes[1][:5]
+        valor = partes[0]
+
+    # Normaliza data para DD/MM/YYYY
     if "-" in valor and len(valor) >= 10:
         p = valor[:10].split("-")
         if len(p) == 3:
-            return f"{p[2]}/{p[1]}/{p[0]}"
-    if " " in valor:
-        return valor.split(" ")[0]
-    return valor
+            valor = f"{p[2]}/{p[1]}/{p[0]}"
+
+    return valor, hora
 
 
 def ler_trabalhos_realizados(page) -> str:
@@ -534,7 +545,7 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
 
     dados.tecnico              = tecnico
     dados.numero_processo      = ler_numero_processo(page)
-    dados.data_visita          = ler_data_visita(page)
+    dados.data_visita, dados.hora_visita = ler_data_visita(page)
     dados.trabalhos_realizados = ler_trabalhos_realizados(page)
 
     print(f"    [PARA FECHAR] Estado={estado} | Técnico={dados.tecnico} | Processo={dados.numero_processo}")
@@ -671,6 +682,7 @@ def main() -> None:
                         page,
                         numero_processo=d.numero_processo,
                         data_visita=d.data_visita,
+                        hora_visita=d.hora_visita,
                         trabalhos=d.trabalhos_realizados,
                         fotos=fotos,
                         pdf_path=d.pdf_path,

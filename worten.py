@@ -147,7 +147,7 @@ def pesquisar_processo(page: Page, numero: str) -> bool:
 # Justificar check-in
 # ──────────────────────────────────────────────
 
-def justificar_checkin(page: Page, data_visita: str) -> bool:
+def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> bool:
     # O botão JUSTIFICAR só aparece quando há check-in falhado
     try:
         page.click(
@@ -198,14 +198,16 @@ def justificar_checkin(page: Page, data_visita: str) -> bool:
                 except Exception:
                     continue
 
-    # ── Passo 3: Preencher hora (se existir) ──
-    try:
-        hora_field = page.locator('input[type="time"]').first
-        hora_field.fill("18:00")
-        hora_field.dispatch_event("change")
-        time.sleep(0.4)
-    except Exception:
-        pass
+    # ── Passo 3: Preencher hora (vem do AWO) ──
+    if _hora_visita:
+        try:
+            hora_field = page.locator('input[type="time"]').first
+            hora_field.fill(_hora_visita)
+            hora_field.dispatch_event("change")
+            time.sleep(0.4)
+            print(f"    Hora preenchida: {_hora_visita}")
+        except Exception:
+            pass
 
     # ── Passo 4: Seleccionar motivo "Atualizei o pedido ao final do dia" ──
     # Pode ser select, input, textarea ou lista de opções clicáveis
@@ -540,9 +542,10 @@ def processar_os_worten(
     page: Page,
     numero_processo: str,
     data_visita: str,
-    trabalhos: str,
-    fotos: list,
-    pdf_path,
+    hora_visita: str = "",
+    trabalhos: str = "",
+    fotos: list = None,
+    pdf_path=None,
 ) -> bool:
     """Executa o fluxo completo Worten para uma OS. Retorna True se concluído."""
     print(f"\n  [WORTEN] Processo {numero_processo}")
@@ -558,7 +561,7 @@ def processar_os_worten(
     try:
         if not pesquisar_processo(page, numero_processo):
             return False
-        if not justificar_checkin(page, data_visita):
+        if not justificar_checkin(page, data_visita, hora_visita):
             return False
         if not atualizar_e_concluir(page):
             return False
