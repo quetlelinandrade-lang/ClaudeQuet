@@ -189,10 +189,11 @@ def test_filtro_exclui_logo_awo():
     end   = src.find("or []", start) + 5
     bloco = src[start:end]
 
-    assert "awo" in bloco,          "Filtro 'awo' não encontrado"
+    assert "excluirNome" in bloco or "awo" in bloco, "Filtro de nome de ficheiro não encontrado"
     assert "logo" in bloco,         "Filtro 'logo' não encontrado"
     assert any(x in bloco for x in ["< 100", "< 80", "< 120"]), "Filtro de tamanho mínimo não encontrado"
-    assert "excluirUrl.some" in bloco or "excluir.some" in bloco, "Lógica de exclusão por URL não encontrada"
+    assert any(x in bloco for x in ["excluirUrl.some", "excluir.some", "excluirNome.some"]), \
+        "Lógica de exclusão por nome de ficheiro não encontrada"
 
     print("  PASSOU: filtro JS exclui logo AWO, logos e imagens pequenas")
 

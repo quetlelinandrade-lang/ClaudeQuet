@@ -317,9 +317,9 @@ def baixar_imagens(page, pasta: Path) -> int:
             }
 
             const vistos  = new Set();
-            const excluir = ['logo', 'icon', 'favicon', 'avatar', 'brand',
-                             'placeholder', 'sprite', 'default', 'navbar',
-                             'header', 'awo', 'awosoft', 'awo-soft'];
+            // Apenas palavras que aparecem no NOME DO FICHEIRO (não no domínio)
+            const excluirNome = ['logo', 'icon', 'favicon', 'avatar',
+                                 'placeholder', 'sprite', 'brand', 'navbar', 'header'];
             const uiSels  = 'header, nav, footer, .navbar, .header, .sidebar, ' +
                             '.menu, .topbar, [class*="logo"], [class*="header"], ' +
                             '[class*="navbar"], [class*="brand"], [class*="topbar"]';
@@ -332,9 +332,9 @@ def baixar_imagens(page, pasta: Path) -> int:
                 // Exclui imagens em containers de UI estrutural
                 if (img.closest(uiSels)) continue;
 
-                // Exclui por palavras-chave no URL
-                const sl = src.toLowerCase();
-                if (excluir.some(k => sl.includes(k))) continue;
+                // Exclui por palavras-chave no NOME DO FICHEIRO (não no domínio)
+                const nomeFicheiro = src.toLowerCase().split('/').pop().split('?')[0];
+                if (excluirNome.some(k => nomeFicheiro.includes(k))) continue;
 
                 // Exclui imagens muito pequenas
                 if (img.naturalWidth  > 0 && img.naturalWidth  < 80) continue;
