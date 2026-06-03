@@ -202,18 +202,50 @@ def ler_select_por_nome_ou_label(page, nome: str) -> str:
 
 
 def ler_numero_processo(page) -> str:
-    valor = page.evaluate("""
-        () => {
-            for (const el of document.querySelectorAll('input, span, p, td, div')) {
-                const v = (el.value || el.textContent || '').trim();
-                if (v.includes('/') && /^\\d{5,}/.test(v)) return v;
+    # Tenta até 3 vezes com espera para Vue.js renderizar
+    for tentativa in range(3):
+        valor = page.evaluate(r"""
+            () => {
+                // Tenta label/input específico do campo Processo
+                for (const lbl of document.querySelectorAll('label')) {
+                    const t = lbl.textContent.trim().toLowerCase();
+                    if (!t.includes('processo') && !t.includes('nº')) continue;
+                    const forId = lbl.getAttribute('for');
+                    const inp = forId ? document.getElementById(forId)
+                                     : lbl.parentElement?.querySelector('input, span, p');
+                    if (inp) {
+                        const v = (inp.value || inp.textContent || '').trim();
+                        if (v) return v;
+                    }
+                }
+                // Tenta qualquer input/span/td com padrão NNNNN/...
+                for (const el of document.querySelectorAll('input, span, p, td, h1, h2, h3, div')) {
+                    const v = (el.value || el.textContent || '').trim();
+                    if (v.includes('/') && /^\d{5,}/.test(v) && v.length < 60) return v;
+                }
+                // Tenta título da página "Ordem: Nome/NNNNNN"
+                const titulo = document.title || '';
+                const m = titulo.match(/(\d{5,})/);
+                if (m) return m[1];
+                return '';
             }
-            return '';
-        }
-    """) or ""
+        """) or ""
+        if valor:
+            break
+        if tentativa < 2:
+            time.sleep(1.5)
+
     if "/" in valor:
-        return valor.split("/")[0].strip()
-    return valor.strip()
+        # Apanha só a parte numérica antes da /
+        parte = valor.split("/")[0].strip()
+        # Remove texto não-numérico que possa ter ficado
+        import re as _re
+        m = _re.match(r"(\d{5,})", parte)
+        return m.group(1) if m else parte
+    # Verifica se é só número (sem /)
+    import re as _re
+    m = _re.search(r"(\d{5,})", valor)
+    return m.group(1) if m else valor.strip()
 
 
 def ler_data_visita(page) -> str:
@@ -1196,8 +1228,13 @@ def main() -> None:
 
             # ── FASE 2: Worten ──
             processos_para_worten = [d for d in fechadas if d.numero_processo]
+            sem_numero = [d for d in fechadas if not d.numero_processo]
+            if sem_numero:
+                print(f"\n  AVISO: {len(sem_numero)} OS fechadas no AWO sem número de processo "
+                      f"(não vão para Worten): {[d.awo_id for d in sem_numero]}")
             if not processos_para_worten:
                 print("\n  Nenhum processo com número para fechar na Worten.")
+                print("  Dica: verifique se o campo 'Nº Processo' está preenchido no AWO.")
                 return
 
             if args.so_awo:
