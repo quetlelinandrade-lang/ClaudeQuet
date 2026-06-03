@@ -274,53 +274,78 @@ def ler_trabalhos_realizados(page) -> str:
 def baixar_imagens(page, pasta: Path) -> int:
     pasta.mkdir(parents=True, exist_ok=True)
 
-    clicou = False
+    # Clicar na aba Imagens/Doc e guardar o elemento da tab para isolar o conteúdo
+    tab_clicada = None
     for tentativa in ['a:has-text("Imagens")', 'a:has-text("Fotos")',
                       '[href*="imagem"]', '[href*="image"]', 'a:has-text("Doc")']:
         try:
             page.click(tentativa, timeout=3000)
+            tab_clicada = tentativa
             time.sleep(2)
-            clicou = True
             break
         except Exception:
             continue
 
-    if not clicou:
+    if not tab_clicada:
         print("    AVISO: aba Imagens/Doc. não encontrada")
         return 0
 
+    # Recolher URLs APENAS do painel activo da tab (não de toda a página)
     img_urls = page.evaluate("""
         () => {
-            const vistos = new Set();
-            const resultado = [];
-            const excluirUrl = ['logo', 'icon', 'favicon', 'avatar', 'brand',
-                                'awo', 'awosoft', 'placeholder', 'sprite',
-                                'thumb_default', 'no-image', 'navbar', 'header'];
-            // Selectores de containers de UI a ignorar
-            const uiContainers = 'header, nav, footer, .navbar, .header, .logo, ' +
-                                 '.sidebar, .menu, .topbar, [class*="logo"], ' +
-                                 '[class*="header"], [class*="navbar"]';
+            // Tenta encontrar o painel activo da tab de imagens
+            const paineis = [
+                // Painel activo genérico
+                '.tab-pane.active img, .tab-content .active img',
+                // Painel com imagens/galeria
+                '[class*="imag"] img, [class*="photo"] img, [class*="foto"] img, [class*="galeri"] img',
+                // Upload/anexos
+                '[class*="upload"] img, [class*="attach"] img, [class*="file"] img',
+                // Containers de conteúdo (excluindo layout)
+                'main img, .content img, [class*="content"] img, article img',
+            ];
 
-            for (const img of document.querySelectorAll('img')) {
+            let imgs = [];
+            for (const sel of paineis) {
+                const found = Array.from(document.querySelectorAll(sel));
+                if (found.length > 0) { imgs = found; break; }
+            }
+
+            // Fallback: todas as imagens da página que não sejam UI
+            if (imgs.length === 0) {
+                imgs = Array.from(document.querySelectorAll('img'));
+            }
+
+            const vistos  = new Set();
+            const excluir = ['logo', 'icon', 'favicon', 'avatar', 'brand',
+                             'placeholder', 'sprite', 'default', 'navbar',
+                             'header', 'awo', 'awosoft', 'awo-soft'];
+            const uiSels  = 'header, nav, footer, .navbar, .header, .sidebar, ' +
+                            '.menu, .topbar, [class*="logo"], [class*="header"], ' +
+                            '[class*="navbar"], [class*="brand"], [class*="topbar"]';
+            const resultado = [];
+
+            for (const img of imgs) {
                 const src = img.src || img.getAttribute('data-src') || '';
                 if (!src || src.startsWith('data:') || vistos.has(src)) continue;
 
-                // Ignora imagens dentro de elementos de UI (cabeçalho, nav, etc.)
-                if (img.closest(uiContainers)) continue;
+                // Exclui imagens em containers de UI estrutural
+                if (img.closest(uiSels)) continue;
 
-                // Ignora imagens muito pequenas
-                if (img.naturalWidth > 0 && img.naturalWidth < 100) continue;
-                if (img.naturalHeight > 0 && img.naturalHeight < 100) continue;
+                // Exclui por palavras-chave no URL
+                const sl = src.toLowerCase();
+                if (excluir.some(k => sl.includes(k))) continue;
 
-                // Ignora por palavras-chave no URL
-                const srcLower = src.toLowerCase();
-                if (excluirUrl.some(k => srcLower.includes(k))) continue;
+                // Exclui imagens muito pequenas
+                if (img.naturalWidth  > 0 && img.naturalWidth  < 80) continue;
+                if (img.naturalHeight > 0 && img.naturalHeight < 80) continue;
 
-                // Ignora logos quadradas pequenas
+                // Exclui ícones quadrados pequenos (logos renderizados grandes passam)
                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                    const ratio = img.naturalWidth / img.naturalHeight;
-                    const area  = img.naturalWidth * img.naturalHeight;
-                    if (area < 20000 && ratio > 0.7 && ratio < 1.4) continue;
+                    const w = img.naturalWidth, h = img.naturalHeight;
+                    const ratio = w / h;
+                    // Logo AWO-Soft: quadrada, azul, ~200px — excluir quadradas até 300x300
+                    if (w <= 300 && h <= 300 && ratio > 0.75 && ratio < 1.33) continue;
                 }
 
                 vistos.add(src);
@@ -330,9 +355,13 @@ def baixar_imagens(page, pasta: Path) -> int:
         }
     """) or []
 
-    cookies   = page.context.cookies()
+    if not img_urls:
+        print("    AVISO: nenhuma imagem encontrada na aba")
+        return 0
+
+    cookies    = page.context.cookies()
     cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-    count = 0
+    count      = 0
 
     for i, url in enumerate(img_urls):
         try:

@@ -191,7 +191,7 @@ def test_filtro_exclui_logo_awo():
 
     assert "awo" in bloco,          "Filtro 'awo' não encontrado"
     assert "logo" in bloco,         "Filtro 'logo' não encontrado"
-    assert "100" in bloco,          "Filtro de tamanho mínimo (100px) não encontrado"
+    assert any(x in bloco for x in ["< 100", "< 80", "< 120"]), "Filtro de tamanho mínimo não encontrado"
     assert "excluirUrl.some" in bloco or "excluir.some" in bloco, "Lógica de exclusão por URL não encontrada"
 
     print("  PASSOU: filtro JS exclui logo AWO, logos e imagens pequenas")
