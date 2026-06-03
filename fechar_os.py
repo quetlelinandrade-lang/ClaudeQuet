@@ -77,13 +77,20 @@ def aguardar_login_awo(page) -> None:
     print("  O script continua sozinho após o login.\n")
     page.goto(f"{URL_AWO}/login")
     page.wait_for_load_state("domcontentloaded")
-    try:
-        page.wait_for_url(lambda u: "/login" not in u, timeout=180000)
-    except PlaywrightTimeout:
+
+    # Espera até 3 minutos pelo login — verifica a cada segundo se saiu do /login
+    import time as _time
+    for _ in range(180):
+        try:
+            url_atual = page.url
+        except Exception:
+            break  # browser fechado — deixa continuar
+        if "/login" not in url_atual:
+            break
+        _time.sleep(1)
+    else:
         raise RuntimeError("Tempo esgotado aguardando login no AWO (3 min).")
-    except Exception:
-        if "/login" in page.url:
-            raise RuntimeError("Erro durante a navegação do login AWO.")
+
     try:
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
