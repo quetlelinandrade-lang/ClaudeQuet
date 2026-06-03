@@ -179,6 +179,25 @@ def test_save_tenta_ctrl_s():
 
 
 # ─────────────────────────────────────────────
+# TESTE 5: filtro de imagens exclui logo AWO
+# ─────────────────────────────────────────────
+
+def test_filtro_exclui_logo_awo():
+    """A query JS deve excluir imagens com 'awo' no URL e imagens pequenas."""
+    src = open("fechar_os.py").read()
+    start = src.find("img_urls = page.evaluate")
+    end   = src.find("or []", start) + 5
+    bloco = src[start:end]
+
+    assert "awo" in bloco,          "Filtro 'awo' não encontrado"
+    assert "logo" in bloco,         "Filtro 'logo' não encontrado"
+    assert "100" in bloco,          "Filtro de tamanho mínimo (100px) não encontrado"
+    assert "excluir.some" in bloco, "Lógica de exclusão por URL não encontrada"
+
+    print("  PASSOU: filtro JS exclui logo AWO, logos e imagens pequenas")
+
+
+# ─────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────
 
@@ -188,6 +207,7 @@ if __name__ == "__main__":
         ("Navegação imprime diagnóstico",          test_navegacao_imprime_diagnostico),
         ("Loop Worten tem contador [i/total]",    test_loop_worten_tem_contador),
         ("salvar_awo tenta Ctrl+S como fallback", test_save_tenta_ctrl_s),
+        ("Filtro exclui logo AWO das fotos",      test_filtro_exclui_logo_awo),
     ]
 
     falhas = 0

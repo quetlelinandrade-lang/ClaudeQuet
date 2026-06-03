@@ -286,10 +286,25 @@ def baixar_imagens(page, pasta: Path) -> int:
         () => {
             const vistos = new Set();
             const resultado = [];
+            // Palavras que identificam logos/ícones a excluir
+            const excluir = ['logo', 'icon', 'favicon', 'avatar', 'brand',
+                             'awo', 'awo-soft', 'awosoft', 'placeholder',
+                             'sprite', 'thumb_default', 'no-image'];
             for (const img of document.querySelectorAll('img')) {
                 const src = img.src || img.getAttribute('data-src') || '';
                 if (!src || src.startsWith('data:') || vistos.has(src)) continue;
-                if (img.naturalWidth > 0 && img.naturalWidth < 50) continue;
+                // Ignora imagens muito pequenas (logos/ícones)
+                if (img.naturalWidth > 0 && img.naturalWidth < 100) continue;
+                if (img.naturalHeight > 0 && img.naturalHeight < 100) continue;
+                // Ignora por URL (logo AWO e similares)
+                const srcLower = src.toLowerCase();
+                if (excluir.some(k => srcLower.includes(k))) continue;
+                // Ignora imagens quadradas pequenas (logos costumam ser quadradas)
+                if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                    const ratio = img.naturalWidth / img.naturalHeight;
+                    const area = img.naturalWidth * img.naturalHeight;
+                    if (area < 10000 && ratio > 0.8 && ratio < 1.2) continue;
+                }
                 vistos.add(src);
                 resultado.push(src);
             }
