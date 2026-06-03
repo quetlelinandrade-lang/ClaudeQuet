@@ -99,9 +99,11 @@ def test_save_falha_nao_bloqueia():
     page2 = make_page()
     page2.evaluate.return_value = "ok:Anderson silva → Fechado"
 
+    mock_gerador = MagicMock()
+    mock_gerador.gerar.return_value = Path("/tmp/3240023.pdf")
+
     with patch.object(fechar_os, 'salvar_awo', return_value=False), \
          patch.object(fechar_os, 'baixar_imagens', return_value=2), \
-         patch.object(fechar_os, 'gerar_pdf', return_value=Path("/tmp/3240023.pdf")), \
          patch.object(fechar_os, 'gerar_relatorio_txt'), \
          patch.object(fechar_os, 'alterar_tipo_fechado', return_value=True), \
          patch.object(fechar_os, 'ler_select_por_nome_ou_label', side_effect=["Realizado", "Anderson"]), \
@@ -109,7 +111,7 @@ def test_save_falha_nao_bloqueia():
          patch.object(fechar_os, 'ler_data_visita', return_value="01/06/2026"), \
          patch.object(fechar_os, 'ler_trabalhos_realizados', return_value="Instalação OK"), \
          patch('builtins.print'):
-        d = fechar_os.processar_os(page2, {"href": "/work-orders/edit/999", "texto": "Teste"}, False, MagicMock())
+        d = fechar_os.processar_os(page2, {"href": "/work-orders/edit/999", "texto": "Teste"}, False, mock_gerador)
         assert d.status == "ok", f"FALHOU: status={d.status} motivo={d.motivo} — save falhar deve NÃO bloquear"
 
     print("  PASSOU: save falha → processo continua para Worten (status=ok)")

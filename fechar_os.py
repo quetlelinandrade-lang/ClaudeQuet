@@ -34,6 +34,7 @@ Uso:
 """
 
 import os
+import re
 import sys
 import time
 import argparse
@@ -51,6 +52,17 @@ load_dotenv()
 URL_AWO       = os.environ.get("PLATFORM_URL", "https://suporteprime.awo-soft.com")
 PLANNING_PATH = "/work-orders/planning"
 PASTA_FECHO   = Path.home() / "Documents" / "FECHO"
+
+SERVICOS_URL     = "https://www.worten.pt/resolve/servicos"
+WORTEN_LOGIN_URL = "https://www.worten.pt/cliente/conta#/myLogin"
+
+MENSAGEM_CLIENTE = (
+    "Caro/a Cliente,\n\n"
+    "O serviço de instalação foi concluído. Foi-lhe enviado um sms/e-mail para avaliação, "
+    "pedimos a gentileza de responder com base no serviço prestado pelo técnico em sua morada, "
+    "pois sua opinião é muito importante para nós.\n\n"
+    "Com os melhores cumprimentos."
+)
 
 
 @dataclass
@@ -78,16 +90,14 @@ def aguardar_login_awo(page) -> None:
     page.goto(f"{URL_AWO}/login")
     page.wait_for_load_state("domcontentloaded")
 
-    # Espera até 3 minutos pelo login — verifica a cada segundo se saiu do /login
-    import time as _time
     for _ in range(180):
         try:
             url_atual = page.url
         except Exception:
-            break  # browser fechado — deixa continuar
+            break
         if "/login" not in url_atual:
             break
-        _time.sleep(1)
+        time.sleep(1)
     else:
         raise RuntimeError("Tempo esgotado aguardando login no AWO (3 min).")
 
@@ -202,11 +212,10 @@ def ler_select_por_nome_ou_label(page, nome: str) -> str:
 
 
 def ler_numero_processo(page) -> str:
-    # Tenta até 3 vezes com espera para Vue.js renderizar
+    valor = ""
     for tentativa in range(3):
         valor = page.evaluate(r"""
             () => {
-                // Tenta label/input específico do campo Processo
                 for (const lbl of document.querySelectorAll('label')) {
                     const t = lbl.textContent.trim().toLowerCase();
                     if (!t.includes('processo') && !t.includes('nº')) continue;
@@ -218,12 +227,10 @@ def ler_numero_processo(page) -> str:
                         if (v) return v;
                     }
                 }
-                // Tenta qualquer input/span/td com padrão NNNNN/...
                 for (const el of document.querySelectorAll('input, span, p, td, h1, h2, h3, div')) {
                     const v = (el.value || el.textContent || '').trim();
                     if (v.includes('/') && /^\d{5,}/.test(v) && v.length < 60) return v;
                 }
-                // Tenta título da página "Ordem: Nome/NNNNNN"
                 const titulo = document.title || '';
                 const m = titulo.match(/(\d{5,})/);
                 if (m) return m[1];
@@ -236,15 +243,10 @@ def ler_numero_processo(page) -> str:
             time.sleep(1.5)
 
     if "/" in valor:
-        # Apanha só a parte numérica antes da /
         parte = valor.split("/")[0].strip()
-        # Remove texto não-numérico que possa ter ficado
-        import re as _re
-        m = _re.match(r"(\d{5,})", parte)
+        m = re.match(r"(\d{5,})", parte)
         return m.group(1) if m else parte
-    # Verifica se é só número (sem /)
-    import re as _re
-    m = _re.search(r"(\d{5,})", valor)
+    m = re.search(r"(\d{5,})", valor)
     return m.group(1) if m else valor.strip()
 
 
@@ -306,7 +308,6 @@ def ler_trabalhos_realizados(page) -> str:
 def baixar_imagens(page, pasta: Path) -> int:
     pasta.mkdir(parents=True, exist_ok=True)
 
-    # Clicar na aba Imagens/Doc e guardar o elemento da tab para isolar o conteúdo
     tab_clicada = None
     for tentativa in ['a:has-text("Imagens")', 'a:has-text("Fotos")',
                       '[href*="imagem"]', '[href*="image"]', 'a:has-text("Doc")']:
@@ -322,30 +323,24 @@ def baixar_imagens(page, pasta: Path) -> int:
         print("    AVISO: aba Imagens/Doc. não encontrada")
         return 0
 
-    # Recolher URLs APENAS do painel activo da tab (não de toda a página)
     img_urls = page.evaluate("""
         () => {
             const vistos     = new Set();
             const resultado  = [];
 
-            // Selectores UI do AWO (navbar topo + sidebar esquerda)
             const uiSels = 'header, nav, footer, aside, ' +
                            '.navbar, .sidebar, .topbar, .top-bar, ' +
                            '[class*="navbar"], [class*="sidebar"], ' +
                            '[class*="topbar"], [class*="top-bar"], ' +
                            '[class*="logo"], [class*="brand"]';
 
-            // Nomes de ficheiro que indicam UI (não fotos de trabalho)
             const excluirNome = ['logo', 'icon', 'favicon', 'avatar',
                                  'placeholder', 'sprite', 'default'];
 
-            // 1.ª tentativa: imagens dentro da secção "Imagens e Documentos"
-            // O AWO usa um h2/h3/div com esse texto + imagens a seguir
             let imgs = [];
             for (const el of document.querySelectorAll('h1,h2,h3,h4,div,section')) {
                 const txt = el.textContent.trim().toLowerCase();
                 if (txt.includes('imagens') && txt.includes('document')) {
-                    // Apanha as imagens no container desta secção ou no pai
                     const container = el.closest('section, .card, .panel, main') || el.parentElement;
                     if (container) {
                         imgs = Array.from(container.querySelectorAll('img'));
@@ -354,7 +349,6 @@ def baixar_imagens(page, pasta: Path) -> int:
                 }
             }
 
-            // 2.ª tentativa: tab com hash #tab_images ou painel activo
             if (imgs.length === 0) {
                 const hash = window.location.hash;
                 if (hash) {
@@ -363,13 +357,11 @@ def baixar_imagens(page, pasta: Path) -> int:
                 }
             }
 
-            // 3.ª tentativa: main ou #app, excluindo UI
             if (imgs.length === 0) {
                 const main = document.querySelector('main, #app, #content, .main-content');
                 if (main) imgs = Array.from(main.querySelectorAll('img'));
             }
 
-            // Fallback: todas as imagens
             if (imgs.length === 0) {
                 imgs = Array.from(document.querySelectorAll('img'));
             }
@@ -378,14 +370,11 @@ def baixar_imagens(page, pasta: Path) -> int:
                 const src = img.src || img.getAttribute('data-src') || '';
                 if (!src || src.startsWith('data:') || vistos.has(src)) continue;
 
-                // Exclui imagens dentro de navbar/sidebar/header
                 if (img.closest(uiSels)) continue;
 
-                // Exclui pelo nome do ficheiro
                 const nome = src.toLowerCase().split('/').pop().split('?')[0];
                 if (excluirNome.some(k => nome.includes(k))) continue;
 
-                // Exclui imagens muito pequenas (ícones)
                 if (img.naturalWidth  > 0 && img.naturalWidth  < 100) continue;
                 if (img.naturalHeight > 0 && img.naturalHeight < 100) continue;
 
@@ -423,26 +412,37 @@ def baixar_imagens(page, pasta: Path) -> int:
 
 
 # ──────────────────────────────────────────────
-# Geração de PDF (contexto headless separado)
+# Geração de PDF — contexto reutilizável
 # ──────────────────────────────────────────────
 
-def gerar_pdf(awo_id: str, pasta: Path, cookies: list, pw) -> Optional[Path]:
-    pdf_path  = pasta / f"{pasta.name}.pdf"
-    print_url = f"{URL_AWO}/work-orders/print/{awo_id}"
-    try:
-        pdf_browser = pw.chromium.launch(headless=True)
-        ctx         = pdf_browser.new_context()
-        ctx.add_cookies(cookies)
-        pdf_page    = ctx.new_page()
-        pdf_page.goto(print_url, wait_until="networkidle", timeout=30000)
-        time.sleep(2)
-        pdf_page.pdf(path=str(pdf_path), format="A4", print_background=True)
-        pdf_browser.close()
-        print(f"    PDF: {pdf_path.name}")
-        return pdf_path
-    except Exception as e:
-        print(f"    AVISO: PDF não gerado: {e}")
-        return None
+class GeradorPDF:
+    """Mantém um único contexto headless para gerar todos os PDFs da sessão."""
+
+    def __init__(self, pw, cookies: list):
+        self._browser = pw.chromium.launch(headless=True)
+        self._ctx     = self._browser.new_context()
+        self._ctx.add_cookies(cookies)
+
+    def gerar(self, awo_id: str, pasta: Path) -> Optional[Path]:
+        pdf_path  = pasta / f"{pasta.name}.pdf"
+        print_url = f"{URL_AWO}/work-orders/print/{awo_id}"
+        try:
+            pdf_page = self._ctx.new_page()
+            pdf_page.goto(print_url, wait_until="networkidle", timeout=30000)
+            time.sleep(2)
+            pdf_page.pdf(path=str(pdf_path), format="A4", print_background=True)
+            pdf_page.close()
+            print(f"    PDF: {pdf_path.name}")
+            return pdf_path
+        except Exception as e:
+            print(f"    AVISO: PDF não gerado: {e}")
+            return None
+
+    def fechar(self) -> None:
+        try:
+            self._browser.close()
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
@@ -546,7 +546,6 @@ def alterar_tipo_fechado(page) -> bool:
 
 def salvar_awo(page) -> bool:
     time.sleep(1)
-    # Tenta pelos textos habituais
     for sel in ['button:has-text("Guardar")', 'button:has-text("Salvar")',
                 'button:has-text("Gravar")', 'input[type="submit"]',
                 'button[type="submit"]:not([disabled])']:
@@ -556,7 +555,6 @@ def salvar_awo(page) -> bool:
             return True
         except Exception:
             continue
-    # Tenta qualquer botão submit visível
     try:
         btns = page.locator("button[type='submit'], input[type='submit']").all()
         for btn in btns:
@@ -566,7 +564,6 @@ def salvar_awo(page) -> bool:
                 return True
     except Exception:
         pass
-    # Último recurso: Ctrl+S
     try:
         page.keyboard.press("Control+s")
         time.sleep(2)
@@ -615,15 +612,15 @@ def scan_form(page, url: str) -> None:
     for t in info["textareas"]:
         print(f"  {t['name']}|{t['id']} = '{t['value']}'")
     print("\n=== LABELS ===")
-    for l in info["labels"]:
-        print(f"  '{l['text']}'  for={l['for']}")
+    for lbl in info["labels"]:
+        print(f"  '{lbl['text']}'  for={lbl['for']}")
 
 
 # ──────────────────────────────────────────────
 # Processamento de cada OS
 # ──────────────────────────────────────────────
 
-def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
+def processar_os(page, ev: dict, dry_run: bool, gerador_pdf: "GeradorPDF") -> DadosOS:
     dados    = DadosOS(href=ev["href"], texto=ev["texto"])
     dados.awo_id = ev["href"].rstrip("/").rsplit("/", 1)[-1]
     full_url = ev["href"] if ev["href"].startswith("http") else f"{URL_AWO}{ev['href']}"
@@ -647,13 +644,11 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
     tecnico = ler_select_por_nome_ou_label(page, "tipo")
     e       = estado.lower().strip()
 
-    # Ignora se não é Realizado
     if not ("realizado" in e and "não" not in e and "nao" not in e):
         print(f"    [{estado or '---'}] {titulo} — ignorada")
         dados.status = "ignorada"
         return dados
 
-    # Ignora se já está Fechado (evita reprocessar)
     if "fechad" in tecnico.lower():
         print(f"    [Já fechado] {titulo} — ignorada")
         dados.status = "ignorada"
@@ -673,7 +668,6 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         dados.status = "para_fechar"
         return dados
 
-    # ── Cria pasta e guarda ficheiros ──
     pasta = PASTA_FECHO / (dados.numero_processo or dados.awo_id)
     pasta.mkdir(parents=True, exist_ok=True)
     dados.pasta = pasta
@@ -681,7 +675,6 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
     n_fotos = baixar_imagens(page, pasta)
     print(f"    {n_fotos} foto(s) → {pasta}")
 
-    # Volta à aba Ficha para gerar PDF
     for sel in ['a:has-text("Ficha")', '[href*="ficha"]', 'li:has-text("Ficha") a']:
         try:
             page.click(sel, timeout=3000)
@@ -690,10 +683,9 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         except Exception:
             continue
 
-    dados.pdf_path = gerar_pdf(dados.awo_id, pasta, page.context.cookies(), pw)
+    dados.pdf_path = gerador_pdf.gerar(dados.awo_id, pasta)
     gerar_relatorio_txt(dados, n_fotos)
 
-    # ── Muda Tipo → Fechado ──
     if not alterar_tipo_fechado(page):
         page.screenshot(path=f"debug_tipo_{dados.awo_id}.png")
         dados.status = "erro"
@@ -703,7 +695,6 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
     if not salvar_awo(page):
         print("    AVISO: botão guardar não encontrado — Tipo já alterado, continua para Worten")
         page.screenshot(path=f"debug_salvar_{dados.awo_id}.png")
-        # Não bloqueia: o tipo Vue.js já foi alterado, segue para Worten mesmo assim
     else:
         print(f"    ✓ Guardado no AWO")
 
@@ -713,51 +704,43 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
 
 
 # ──────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────
-
-# ──────────────────────────────────────────────
 # FASE 2 — Worten: funções de automação
 # ──────────────────────────────────────────────
-
-SERVICOS_URL     = "https://www.worten.pt/resolve/servicos"
-WORTEN_LOGIN_URL = "https://www.worten.pt/cliente/conta#/myLogin"
-
-MENSAGEM_CLIENTE = (
-    "Caro/a Cliente,\n\n"
-    "O serviço de instalação foi concluído. Foi-lhe enviado um sms/e-mail para avaliação, "
-    "pedimos a gentileza de responder com base no serviço prestado pelo técnico em sua morada, "
-    "pois sua opinião é muito importante para nós.\n\n"
-    "Com os melhores cumprimentos."
-)
-
 
 def aguardar_login_worten(page) -> None:
     print("\n  ── FASE 2: Worten ──")
     print("  Abrindo Worten — faça o login MANUALMENTE no navegador.")
     print("  O script continuará automaticamente após o login.\n")
     page.goto(WORTEN_LOGIN_URL, wait_until="domcontentloaded")
-    try:
-        page.wait_for_url(
-            lambda u: "myLogin" not in u and "login" not in u.lower(),
-            timeout=120000
-        )
-    except PlaywrightTimeout:
+
+    for _ in range(120):
+        try:
+            url_atual = page.url
+        except Exception:
+            break
+        if "myLogin" not in url_atual and "login" not in url_atual.lower():
+            break
+        time.sleep(1)
+    else:
         raise RuntimeError("Tempo esgotado aguardando login na Worten (2 min).")
+
     try:
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
     print("  Login Worten OK! A navegar para os serviços...")
-    # Navega pelo menu logo após o login
     _navegar_para_listagem(page)
     print("  Listagem de serviços carregada.\n")
 
 
-def _clicar_botao_w(page, *textos, timeout=8000) -> bool:
+def _clicar_w(page, *textos, timeout=8000) -> bool:
+    """Clica no primeiro elemento visível que contenha qualquer dos textos dados."""
     for txt in textos:
-        for sel in [f"button:has-text('{txt}')", f"a:has-text('{txt}')",
-                    f"span:has-text('{txt}')", f"[class*='btn']:has-text('{txt}')"]:
+        for sel in [
+            f"button:has-text('{txt}')", f"a:has-text('{txt}')",
+            f"span:has-text('{txt}')", f"[class*='btn']:has-text('{txt}')",
+            f"text={txt}",
+        ]:
             try:
                 loc = page.locator(sel).first
                 loc.wait_for(state="visible", timeout=timeout)
@@ -765,18 +748,6 @@ def _clicar_botao_w(page, *textos, timeout=8000) -> bool:
                 return True
             except Exception:
                 continue
-    return False
-
-
-def _clicar_texto_w(page, *textos, timeout=8000) -> bool:
-    for txt in textos:
-        try:
-            loc = page.locator(f"text={txt}").first
-            loc.wait_for(state="visible", timeout=timeout)
-            loc.click()
-            return True
-        except Exception:
-            continue
     return False
 
 
@@ -814,14 +785,12 @@ def _navegar_para_listagem(page) -> bool:
     """Navega para worten.pt/resolve/servicos pelo caminho correcto do menu."""
     print("    Worten: worten.pt → Menu → Serviços → Torna-te Parceiro...")
 
-    # 1. Ir para worten.pt
     try:
         page.goto("https://www.worten.pt/", wait_until="networkidle", timeout=20000)
     except Exception:
         page.goto("https://www.worten.pt/")
     time.sleep(2)
 
-    # 2. Clicar em Menu (hambúrguer)
     clicou_menu = False
     for sel in ["button:has-text('Menu')", "text=☰ Menu", "text=Menu",
                 "[aria-label*='menu' i]", "nav button", ".hamburger"]:
@@ -845,7 +814,6 @@ def _navegar_para_listagem(page) -> bool:
         except Exception:
             return False
 
-    # 3. Clicar em Serviços no menu lateral
     clicou_servicos = False
     for sel in ["text=Serviços", "a:has-text('Serviços')", "li:has-text('Serviços') a"]:
         try:
@@ -860,7 +828,6 @@ def _navegar_para_listagem(page) -> bool:
     if not clicou_servicos:
         print("    AVISO: item Serviços não encontrado no menu")
 
-    # 4. Clicar em Torna-te Parceiro / Torna-te um Parceiro
     clicou_parceiro = False
     for sel in ["text=Torna-te Parceiro", "text=TORNA-TE PARCEIRO",
                 "text=Torna-te um Parceiro", "a:has-text('Parceiro')",
@@ -882,7 +849,6 @@ def _navegar_para_listagem(page) -> bool:
 
     print(f"    URL actual: {page.url}")
 
-    # 5. Verifica se a listagem está carregada
     try:
         page.locator("input[placeholder*='Pesquisar'], input[type='search'], "
                      "input[placeholder*='pesquisar']").first.wait_for(
@@ -896,24 +862,45 @@ def _navegar_para_listagem(page) -> bool:
 
 
 def _abrir_processo_worten(page, numero: str) -> bool:
-    if not _navegar_para_listagem(page):
-        print(f"    ERRO: não foi possível carregar a listagem de serviços")
-        return False
+    # Navega directamente para a listagem sem repetir o caminho do menu
+    try:
+        page.goto(SERVICOS_URL, wait_until="networkidle", timeout=20000)
+        time.sleep(2)
+    except Exception:
+        pass
 
-    # Pesquisar processo
+    # Verifica se a listagem está acessível; se não, refaz navegação via menu
+    campo_pesquisa = None
     for sel in ["input[placeholder*='Pesquisar']", "input[type='search']",
                 "input[placeholder*='pesquisar']"]:
         try:
-            campo = page.locator(sel).first
-            campo.wait_for(state="visible", timeout=5000)
-            campo.clear()
-            campo.fill(numero)
-            time.sleep(2)
+            loc = page.locator(sel).first
+            loc.wait_for(state="visible", timeout=5000)
+            campo_pesquisa = loc
             break
         except Exception:
             continue
 
-    # Clicar no cartão do processo
+    if not campo_pesquisa:
+        if not _navegar_para_listagem(page):
+            print(f"    ERRO: não foi possível carregar a listagem de serviços")
+            return False
+        for sel in ["input[placeholder*='Pesquisar']", "input[type='search']",
+                    "input[placeholder*='pesquisar']"]:
+            try:
+                campo_pesquisa = page.locator(sel).first
+                campo_pesquisa.wait_for(state="visible", timeout=5000)
+                break
+            except Exception:
+                campo_pesquisa = None
+
+    if not campo_pesquisa:
+        return False
+
+    campo_pesquisa.clear()
+    campo_pesquisa.fill(numero)
+    time.sleep(2)
+
     for sel in [f"text=#{numero}", f":text('#{numero}')"]:
         try:
             card = page.locator(sel).first
@@ -956,16 +943,16 @@ def _justificar_checkin_w(page, dados: DadosOS) -> None:
         except Exception:
             continue
     time.sleep(0.5)
-    _clicar_botao_w(page, "AVANÇAR", "Avançar")
+    _clicar_w(page, "AVANÇAR", "Avançar")
     page.wait_for_load_state("networkidle")
     time.sleep(1)
 
 
 def _atualizar_e_concluir_w(page, numero: str) -> bool:
-    if not _clicar_botao_w(page, "ATUALIZAR PEDIDO", "Atualizar Pedido"):
+    if not _clicar_w(page, "ATUALIZAR PEDIDO", "Atualizar Pedido"):
         return False
     time.sleep(1.5)
-    if not _clicar_texto_w(page, "Concluir Serviço", "CONCLUIR SERVIÇO"):
+    if not _clicar_w(page, "Concluir Serviço", "CONCLUIR SERVIÇO"):
         return False
     time.sleep(1)
     for sel in ["text=Serviço concluído", "label:has-text('Serviço concluído')",
@@ -976,15 +963,15 @@ def _atualizar_e_concluir_w(page, numero: str) -> bool:
         except Exception:
             continue
     time.sleep(0.5)
-    _clicar_botao_w(page, "CONFIRMAR", "Confirmar", "AVANÇAR", "Avançar", "OK")
+    _clicar_w(page, "CONFIRMAR", "Confirmar", "AVANÇAR", "Avançar", "OK")
     page.wait_for_load_state("networkidle")
     time.sleep(1)
     return True
 
 
 def _preencher_relatorio_w(page, dados: DadosOS) -> bool:
-    if not _clicar_botao_w(page, "PREENCHER RELATÓRIO", "Preencher Relatório",
-                           "PREENCHER RELATORIO"):
+    if not _clicar_w(page, "PREENCHER RELATÓRIO", "Preencher Relatório",
+                     "PREENCHER RELATORIO"):
         return False
     page.wait_for_load_state("networkidle")
     time.sleep(1)
@@ -1011,7 +998,6 @@ def _preencher_relatorio_w(page, dados: DadosOS) -> bool:
     _selecionar_dropdown_w(page, "localização", "morada do cliente")
     _selecionar_dropdown_w(page, "Localização", "morada do cliente")
 
-    # Upload fotos
     if dados.pasta:
         fotos = sorted(dados.pasta.glob("foto_*.jpg")) + sorted(dados.pasta.glob("foto_*.png"))
         if fotos:
@@ -1027,8 +1013,8 @@ def _preencher_relatorio_w(page, dados: DadosOS) -> bool:
                     continue
 
     time.sleep(1)
-    if not _clicar_botao_w(page, "ENVIAR RELATÓRIO", "Enviar Relatório",
-                           "CONCLUIR RELATÓRIO", "Concluir Relatório"):
+    if not _clicar_w(page, "ENVIAR RELATÓRIO", "Enviar Relatório",
+                     "CONCLUIR RELATÓRIO", "Concluir Relatório"):
         return False
     page.wait_for_load_state("networkidle")
     time.sleep(1.5)
@@ -1038,7 +1024,7 @@ def _preencher_relatorio_w(page, dados: DadosOS) -> bool:
 def _anexar_pdf_w(page, dados: DadosOS) -> bool:
     if not dados.pdf_path:
         return True
-    if not _clicar_texto_w(page, "ANEXOS", "Anexos"):
+    if not _clicar_w(page, "ANEXOS", "Anexos"):
         return False
     page.wait_for_load_state("networkidle")
     time.sleep(1)
@@ -1051,7 +1037,7 @@ def _anexar_pdf_w(page, dados: DadosOS) -> bool:
             break
         except Exception:
             continue
-    if not _clicar_botao_w(page, "GUARDAR", "Guardar"):
+    if not _clicar_w(page, "GUARDAR", "Guardar"):
         return False
     page.wait_for_load_state("networkidle")
     time.sleep(1.5)
@@ -1059,11 +1045,11 @@ def _anexar_pdf_w(page, dados: DadosOS) -> bool:
 
 
 def _concluir_servico_w(page) -> None:
-    _clicar_texto_w(page, "VER ESTADO DO SERVIÇO", "Estado do Serviço", timeout=3000)
+    _clicar_w(page, "VER ESTADO DO SERVIÇO", "Estado do Serviço", timeout=3000)
     time.sleep(0.5)
-    _clicar_botao_w(page, "ATUALIZAR PEDIDO", "Atualizar Pedido")
+    _clicar_w(page, "ATUALIZAR PEDIDO", "Atualizar Pedido")
     time.sleep(1)
-    _clicar_texto_w(page, "Concluir Serviço", "CONCLUIR SERVIÇO")
+    _clicar_w(page, "Concluir Serviço", "CONCLUIR SERVIÇO")
     time.sleep(1)
     for sel in ["text=Serviço concluído", "label:has-text('Serviço concluído')",
                 "text=Marcar pedido como finalizado"]:
@@ -1073,15 +1059,15 @@ def _concluir_servico_w(page) -> None:
         except Exception:
             continue
     time.sleep(0.5)
-    _clicar_botao_w(page, "CONFIRMAR", "Confirmar", "CONCLUIR SERVIÇO", "Concluir Serviço")
+    _clicar_w(page, "CONFIRMAR", "Confirmar", "CONCLUIR SERVIÇO", "Concluir Serviço")
     page.wait_for_load_state("networkidle")
     time.sleep(1.5)
-    _clicar_botao_w(page, "FECHAR", "Fechar", "OK")
+    _clicar_w(page, "FECHAR", "Fechar", "OK")
     time.sleep(1)
 
 
 def _enviar_mensagem_w(page, numero: str) -> None:
-    if not _clicar_texto_w(page, "ENVIAR MENSAGEM AO CLIENTE", "Enviar Mensagem ao Cliente"):
+    if not _clicar_w(page, "ENVIAR MENSAGEM AO CLIENTE", "Enviar Mensagem ao Cliente"):
         print(f"    AVISO: botão de mensagem não encontrado")
         return
     page.wait_for_load_state("networkidle")
@@ -1156,6 +1142,7 @@ def main() -> None:
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False)
         page    = browser.new_page()
+        gerador_pdf = None
 
         try:
             aguardar_login_awo(page)
@@ -1193,11 +1180,16 @@ def main() -> None:
                 print("  Eventos encontrados mas sem URLs — use --debug para inspecionar.")
                 return
 
-            print(f"  {len(eventos)} OS encontradas em {label}. Processando AWO...\n")
+            total = len(eventos)
+            print(f"  {total} OS encontradas em {label}. Processando AWO...\n")
+
+            # Cria contexto PDF partilhado (um único browser headless para todos os PDFs)
+            gerador_pdf = GeradorPDF(pw, page.context.cookies())
 
             lista: list[DadosOS] = []
-            for ev in eventos:
-                d = processar_os(page, ev, args.dry_run, pw)
+            for i, ev in enumerate(eventos, 1):
+                print(f"  AWO [{i}/{total}]: {ev['texto'][:50]}")
+                d = processar_os(page, ev, args.dry_run, gerador_pdf)
                 lista.append(d)
                 time.sleep(0.3)
 
@@ -1226,7 +1218,6 @@ def main() -> None:
                 print(f"  Pasta: {PASTA_FECHO}")
             print(f"{'='*44}")
 
-            # ── FASE 2: Worten ──
             processos_para_worten = [d for d in fechadas if d.numero_processo]
             sem_numero = [d for d in fechadas if not d.numero_processo]
             if sem_numero:
@@ -1269,6 +1260,8 @@ def main() -> None:
             print(f"\nErro: {exc}")
             sys.exit(1)
         finally:
+            if gerador_pdf:
+                gerador_pdf.fechar()
             print("\n  Pressione Enter para fechar o navegador...")
             input()
             browser.close()
