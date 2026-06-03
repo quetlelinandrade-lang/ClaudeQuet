@@ -158,31 +158,30 @@ def justificar_checkin(page: Page, data_visita: str) -> bool:
     except Exception:
         return True  # Sem alerta de check-in falhado — continua normalmente
 
-    # Opção "Sim, efetuei a visita" — tenta várias estratégias
-    selecionou = False
-    for sel in [
-        'text="Sim, efetuei a visita"',
-        'label:has-text("Sim, efetuei a visita")',
-        'input[value*="sim" i]',
-        'input[value="true"]',
-    ]:
-        try:
-            page.click(sel, timeout=3000)
-            time.sleep(0.5)
-            selecionou = True
-            break
-        except Exception:
-            continue
+    # Screenshot de diagnóstico antes de tentar seleccionar
+    page.screenshot(path="debug_checkin.png")
 
-    if not selecionou:
-        # Clica directamente no primeiro input[type="radio"] visível
-        try:
-            radios = page.locator('input[type="radio"]').all()
-            if radios:
-                radios[0].click(force=True)
-                time.sleep(0.5)
-        except Exception:
-            pass
+    # Usa JavaScript para encontrar e clicar em qualquer elemento com "Sim"
+    selecionou = page.evaluate("""
+        () => {
+            // Tenta input[type="radio"]
+            const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+            if (radios.length > 0) { radios[0].click(); return 'radio'; }
+
+            // Tenta qualquer elemento clicável com texto "Sim"
+            const todos = Array.from(document.querySelectorAll('label, span, div, button, li'));
+            for (const el of todos) {
+                const txt = el.textContent.trim();
+                if (txt === 'Sim, efetuei a visita' || txt === 'Sim' || txt.startsWith('Sim,')) {
+                    el.click();
+                    return 'texto:' + txt;
+                }
+            }
+            return false;
+        }
+    """)
+    print(f"    Seleccionou radio: {selecionou}")
+    time.sleep(1)
 
     # Data da visita
     if data_visita:
@@ -214,11 +213,10 @@ def justificar_checkin(page: Page, data_visita: str) -> bool:
             continue
 
     # Aguarda o botão AVANÇAR ficar activo após seleccionar o radio
-    time.sleep(1)
+    time.sleep(1.5)
     try:
         btn = page.locator('button:has-text("AVANÇAR"), button:has-text("Avançar")').first
-        btn.wait_for(state="visible", timeout=5000)
-        btn.click(timeout=8000)
+        btn.click(force=True, timeout=8000)
         time.sleep(2)
     except Exception as e:
         print(f"    AVISO: AVANÇAR não encontrado: {e}")
