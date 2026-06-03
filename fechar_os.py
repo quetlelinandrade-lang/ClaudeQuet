@@ -293,25 +293,36 @@ def baixar_imagens(page, pasta: Path) -> int:
         () => {
             const vistos = new Set();
             const resultado = [];
-            // Palavras que identificam logos/ícones a excluir
-            const excluir = ['logo', 'icon', 'favicon', 'avatar', 'brand',
-                             'awo', 'awo-soft', 'awosoft', 'placeholder',
-                             'sprite', 'thumb_default', 'no-image'];
+            const excluirUrl = ['logo', 'icon', 'favicon', 'avatar', 'brand',
+                                'awo', 'awosoft', 'placeholder', 'sprite',
+                                'thumb_default', 'no-image', 'navbar', 'header'];
+            // Selectores de containers de UI a ignorar
+            const uiContainers = 'header, nav, footer, .navbar, .header, .logo, ' +
+                                 '.sidebar, .menu, .topbar, [class*="logo"], ' +
+                                 '[class*="header"], [class*="navbar"]';
+
             for (const img of document.querySelectorAll('img')) {
                 const src = img.src || img.getAttribute('data-src') || '';
                 if (!src || src.startsWith('data:') || vistos.has(src)) continue;
-                // Ignora imagens muito pequenas (logos/ícones)
+
+                // Ignora imagens dentro de elementos de UI (cabeçalho, nav, etc.)
+                if (img.closest(uiContainers)) continue;
+
+                // Ignora imagens muito pequenas
                 if (img.naturalWidth > 0 && img.naturalWidth < 100) continue;
                 if (img.naturalHeight > 0 && img.naturalHeight < 100) continue;
-                // Ignora por URL (logo AWO e similares)
+
+                // Ignora por palavras-chave no URL
                 const srcLower = src.toLowerCase();
-                if (excluir.some(k => srcLower.includes(k))) continue;
-                // Ignora imagens quadradas pequenas (logos costumam ser quadradas)
+                if (excluirUrl.some(k => srcLower.includes(k))) continue;
+
+                // Ignora logos quadradas pequenas
                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
                     const ratio = img.naturalWidth / img.naturalHeight;
-                    const area = img.naturalWidth * img.naturalHeight;
-                    if (area < 10000 && ratio > 0.8 && ratio < 1.2) continue;
+                    const area  = img.naturalWidth * img.naturalHeight;
+                    if (area < 20000 && ratio > 0.7 && ratio < 1.4) continue;
                 }
+
                 vistos.add(src);
                 resultado.push(src);
             }
