@@ -1,25 +1,29 @@
 """
-Automação AWO — Fecho de OS
+Automação AWO + Worten — Fecho de OS
 
 Fluxo:
-  1. Login manual no AWO (aguarda até 3 minutos)
-  2. Calendário do dia anterior → encontra OS com Estado=Realizado
-  3. Para cada OS: lê dados, baixa imagens, gera PDF, guarda relatorio.txt, muda Tipo→Fechado
-  4. Relatório final no terminal
+  FASE 1 — AWO (login manual):
+    1. Calendário do dia → encontra OS com Estado=Realizado e Trabalhos preenchidos
+    2. Para cada OS: lê dados, baixa imagens, gera PDF, guarda relatorio.txt, muda Tipo→Fechado
+
+  FASE 2 — Worten (login manual):
+    3. Para cada OS processada: pesquisa processo, justifica check-in, preenche
+       relatório, anexa PDF e conclui serviço com mensagem ao cliente.
 
 Estrutura de pastas criada:
-    Documentos\FECHO\
-        {numero_processo}\
-            foto_01.jpg  (imagens descarregadas)
+    Documentos/FECHO/
+        {numero_processo}/
+            foto_01.jpg  (imagens descarregadas do AWO)
             ...
             {numero_processo}.pdf
             relatorio.txt
 
 Uso:
-    python fechar_os.py            # processa ontem (padrão)
-    python fechar_os.py --hoje     # processa hoje
-    python fechar_os.py --dry-run  # lista sem alterar
-    python fechar_os.py --debug    # mostra eventos encontrados e sai
+    python fechar_os.py                      # processa ontem (padrão)
+    python fechar_os.py --hoje               # processa hoje
+    python fechar_os.py --dry-run            # lista sem alterar
+    python fechar_os.py --so-awo             # fase AWO apenas (sem Worten)
+    python fechar_os.py --debug              # mostra eventos encontrados e sai
     python fechar_os.py --scan-form /work-orders/edit/XXXXX
 """
 
@@ -35,6 +39,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from worten import aguardar_login_worten, processar_os_worten
 
 load_dotenv()
 
@@ -585,16 +590,17 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
 # ──────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fecho automático de OS no AWO")
+    parser = argparse.ArgumentParser(description="Fecho automático de OS no AWO + Worten")
     parser.add_argument("--dry-run",   action="store_true", help="Lista sem alterar")
     parser.add_argument("--hoje",      action="store_true", help="Processa hoje (padrão: ontem)")
+    parser.add_argument("--so-awo",    action="store_true", help="Apenas fase AWO, sem Worten")
     parser.add_argument("--debug",     action="store_true", help="Mostra eventos e sai")
     parser.add_argument("--scan-form", metavar="URL",       help="Diagnóstico de formulário AWO")
     args = parser.parse_args()
 
     alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
     label = alvo.strftime("%d/%m/%Y")
-    modo  = "DRY RUN" if args.dry_run else "FECHO AWO"
+    modo  = "DRY RUN" if args.dry_run else ("FECHO AWO" if args.so_awo else "FECHO AWO + WORTEN")
 
     print(f"\n=== Fechar OS — {label} ({modo}) ===")
     PASTA_FECHO.mkdir(parents=True, exist_ok=True)
@@ -647,6 +653,31 @@ def main() -> None:
                 lista.append(d)
                 time.sleep(0.3)
 
+            # ── Fase 2: Worten ──
+            fechadas_awo = [d for d in lista if d.status == "ok"]
+            worten_ok: list[DadosOS] = []
+            worten_err: list[DadosOS] = []
+
+            if not args.dry_run and not args.so_awo and fechadas_awo:
+                print(f"\n{'='*44}")
+                print("         FASE 2 — WORTEN")
+                print(f"{'='*44}")
+                print(f"  {len(fechadas_awo)} OS para processar na Worten.\n")
+                aguardar_login_worten(page)
+
+                for d in fechadas_awo:
+                    fotos = sorted(d.pasta.glob("foto_*")) if d.pasta else []
+                    ok = processar_os_worten(
+                        page,
+                        numero_processo=d.numero_processo,
+                        data_visita=d.data_visita,
+                        trabalhos=d.trabalhos_realizados,
+                        fotos=fotos,
+                        pdf_path=d.pdf_path,
+                    )
+                    (worten_ok if ok else worten_err).append(d)
+                    time.sleep(0.5)
+
             # ── Relatório final ──
             fechadas  = [d for d in lista if d.status == "ok"]
             dry_list  = [d for d in lista if d.status == "para_fechar"]
@@ -663,12 +694,18 @@ def main() -> None:
                 for d in dry_list:
                     print(f"    • {d.numero_processo or d.texto[:40]} | {d.tecnico}")
             else:
-                print(f"  Fechadas ✓     : {len(fechadas)}")
+                print(f"  Fechadas AWO ✓ : {len(fechadas)}")
                 print(f"  Ignoradas      : {len(ignoradas)}")
                 if erros:
-                    print(f"  Erros          : {len(erros)}")
+                    print(f"  Erros AWO      : {len(erros)}")
                     for d in erros:
                         print(f"    ✗ {d.numero_processo or d.texto[:40]} → {d.motivo}")
+                if not args.so_awo:
+                    print(f"  Worten OK ✓    : {len(worten_ok)}")
+                    if worten_err:
+                        print(f"  Worten erros   : {len(worten_err)}")
+                        for d in worten_err:
+                            print(f"    ✗ {d.numero_processo or d.texto[:40]}")
                 print(f"\n  Pasta: {PASTA_FECHO}")
             print(f"{'='*44}")
 
