@@ -188,67 +188,80 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
             }
         """)
 
-    time.sleep(1.5)
+    time.sleep(2)  # Aguarda modal de data/hora aparecer
 
-    # ── Passo 2: Selecionar data e hora (modal com slots) ──
-    # Após clicar no radio aparece um seletor de data/hora — clicar nele abre o modal
-    try:
-        page.click(
-            'button:has-text("Selecionar data"), button:has-text("data e hora"), '
-            '[placeholder*="data" i], input[readonly]',
-            timeout=4000,
-        )
-        time.sleep(1)
-    except Exception:
-        pass  # Pode abrir automaticamente
+    # ── Passo 2: Modal "Selecionar data e hora" ──
+    # Verifica se o modal está visível
+    modal_visivel = page.evaluate("""
+        () => {
+            const els = Array.from(document.querySelectorAll('h2, h3, div, span'));
+            return els.some(el => el.textContent.trim().toLowerCase().includes('selecionar data'));
+        }
+    """)
 
-    # Selecionar o dia correcto no modal (círculos com número do dia)
-    if data_visita:
-        partes = data_visita.split("/")
-        if len(partes) == 3:
-            dia = str(int(partes[0]))  # Remove zero à esquerda: "03" → "3"
-            try:
-                page.locator(f'button:has-text("{dia}"), span:has-text("{dia}")').first.click(timeout=3000)
+    if modal_visivel:
+        print("    Modal de data/hora detectado.")
+
+        # Selecionar o dia correcto (círculos com número do dia)
+        if data_visita:
+            partes = data_visita.split("/")
+            if len(partes) == 3:
+                dia = str(int(partes[0]))  # "03" → "3"
+                clicou_dia = page.evaluate(f"""
+                    () => {{
+                        const dia = '{dia}';
+                        // Os dias são botões com o número e abreviatura (ex: "Qua\\n03")
+                        for (const btn of document.querySelectorAll('button')) {{
+                            const txt = btn.textContent.trim();
+                            // Último número no texto do botão = dia
+                            const m = txt.match(/(\\d{{1,2}})\\s*$/);
+                            if (m && m[1] === dia) {{
+                                btn.click();
+                                return txt;
+                            }}
+                        }}
+                        return false;
+                    }}
+                """)
+                print(f"    Dia clicado: {clicou_dia}")
                 time.sleep(0.5)
-                print(f"    Dia seleccionado: {dia}")
-            except Exception:
-                pass
 
-    # Selecionar o slot de hora (ex: "10:00 - 12:00")
-    # Usa a hora do AWO para encontrar o slot mais próximo
-    if _hora_visita:
-        hora_int = int(_hora_visita.split(":")[0]) if ":" in _hora_visita else 0
-        try:
-            # Tenta clicar no slot que contém a hora de início
-            slot_clicado = page.evaluate(f"""
+        # Selecionar slot de hora mais próximo da hora do AWO
+        if _hora_visita:
+            hora_int = int(_hora_visita.split(":")[0]) if ":" in _hora_visita else 0
+            slot = page.evaluate(f"""
                 () => {{
                     const hora = {hora_int};
-                    const slots = Array.from(document.querySelectorAll('button'));
-                    for (const btn of slots) {{
+                    for (const btn of document.querySelectorAll('button')) {{
                         const txt = btn.textContent.trim();
-                        // Formato: "10:00 - 12:00"
-                        const m = txt.match(/^(\\d{{1,2}}):(\\d{{2}})\\s*-/);
+                        const m = txt.match(/^(\\d{{1,2}}):(\\d{{2}})\\s*[-–]/);
                         if (m && parseInt(m[1]) === hora) {{
                             btn.click();
                             return txt;
                         }}
                     }}
+                    // Fallback: clica no primeiro slot disponível
+                    for (const btn of document.querySelectorAll('button')) {{
+                        if (/\\d{{1,2}}:\\d{{2}}\\s*[-–]/.test(btn.textContent.trim())) {{
+                            btn.click();
+                            return 'fallback:' + btn.textContent.trim();
+                        }}
+                    }}
                     return false;
                 }}
             """)
-            if slot_clicado:
-                print(f"    Slot horário: {slot_clicado}")
+            print(f"    Slot horário: {slot}")
             time.sleep(0.5)
-        except Exception:
-            pass
 
-    # Clicar SELECIONAR no modal
-    try:
-        page.click('button:has-text("SELECIONAR"), button:has-text("Selecionar")', timeout=4000)
-        time.sleep(1)
-        print("    Data e hora seleccionadas.")
-    except Exception:
-        pass  # Modal pode não existir em todos os processos
+        # Clicar SELECIONAR
+        try:
+            page.locator('button:has-text("SELECIONAR"), button:has-text("Selecionar")').last.click(timeout=4000)
+            time.sleep(1)
+            print("    SELECIONAR clicado.")
+        except Exception as e:
+            print(f"    AVISO: SELECIONAR não encontrado: {e}")
+    else:
+        print("    Modal de data/hora não detectado — a continuar.")
 
     # ── Passo 3: Motivo de falha de check-in (lista de radio buttons) ──
     # Opção: "Atualizei o pedido ao final do dia"
@@ -303,14 +316,22 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
 # ──────────────────────────────────────────────
 
 def atualizar_e_concluir(page: Page) -> bool:
+    # Aguarda a página estabilizar após AVANÇAR
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    time.sleep(2)
+
     try:
         page.click(
             'button:has-text("ATUALIZAR PEDIDO"), a:has-text("ATUALIZAR PEDIDO")',
-            timeout=8000,
+            timeout=10000,
         )
         time.sleep(1)
     except Exception as e:
         print(f"    AVISO: ATUALIZAR PEDIDO não encontrado: {e}")
+        page.screenshot(path="debug_atualizar_pedido.png")
         return False
 
     for sel in ['button:has-text("Concluir Serviço")', 'a:has-text("Concluir Serviço")']:
