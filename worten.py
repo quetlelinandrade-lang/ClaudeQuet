@@ -160,24 +160,41 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
 
     # ── Passo 1: Seleccionar "Sim, efetuei a visita" ──
     page.screenshot(path="debug_checkin_1_antes_radio.png")
-    selecionou = page.evaluate("""
-        () => {
-            // input[type="radio"] normal
-            const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-            if (radios.length > 0) { radios[0].click(); return 'radio-input'; }
-            // Elementos com texto "Sim"
-            const todos = Array.from(document.querySelectorAll('label, span, div, button, li, p'));
-            for (const el of todos) {
-                const txt = el.textContent.trim();
-                if (txt === 'Sim, efetuei a visita' || txt.startsWith('Sim,') || txt === 'Sim') {
-                    el.click();
-                    return 'texto:' + txt;
+
+    # Tenta primeiro com Playwright nativo (mais fiável com React)
+    selecionou = False
+    for sel in [
+        'text="Sim, efetuei a visita"',
+        ':text("Sim, efetuei a visita")',
+        'label:has-text("Sim, efetuei a visita")',
+        'input[type="radio"] >> nth=0',
+    ]:
+        try:
+            page.locator(sel).first.click(timeout=2000, force=True)
+            selecionou = True
+            print(f"    Radio clicado via: {sel}")
+            break
+        except Exception:
+            continue
+
+    if not selecionou:
+        # Fallback: JavaScript varre todos os elementos
+        resultado = page.evaluate("""
+            () => {
+                const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+                if (radios.length > 0) { radios[0].click(); return 'radio-input'; }
+                for (const el of document.querySelectorAll('label, span, div, button, li, p')) {
+                    const txt = el.textContent.trim();
+                    if (txt === 'Sim, efetuei a visita' || txt.startsWith('Sim,') || txt === 'Sim') {
+                        el.click();
+                        return 'js:' + txt;
+                    }
                 }
+                return 'nao-encontrado';
             }
-            return false;
-        }
-    """)
-    print(f"    Radio: {selecionou}")
+        """)
+        print(f"    Radio (JS fallback): {resultado}")
+
     time.sleep(1.5)  # Aguarda campos adicionais aparecerem
 
     # ── Passo 2: Preencher data da visita ──
