@@ -549,22 +549,30 @@ def processar_os(page, ev: dict, dry_run: bool, pw) -> DadosOS:
         return dados
 
     estado  = ler_select_por_nome_ou_label(page, "estado")
-    tecnico = ler_select_por_nome_ou_label(page, "tipo")
+    tipo    = ler_select_por_nome_ou_label(page, "tipo")
     e       = estado.lower().strip()
+    t       = tipo.lower().strip()
 
-    # Ignora se não é Realizado
+    # Ignora se Estado não é Realizado
     if not ("realizado" in e and "não" not in e and "nao" not in e):
-        print(f"    [{estado or '---'}] {titulo} — ignorada")
+        print(f"    [{estado or '---'}] {titulo} — ignorada (estado)")
         dados.status = "ignorada"
         return dados
 
-    # Ignora se já está Fechado (evita reprocessar)
-    if "fechad" in tecnico.lower():
-        print(f"    [Já fechado] {titulo} — ignorada")
+    # Ignora se Tipo é REAGENDAR, Fechado ou outro valor que não seja nome de técnico
+    TIPOS_IGNORAR = ("reagendar", "fechad", "cancelad", "pendente", "aberto", "em curso")
+    if any(p in t for p in TIPOS_IGNORAR):
+        print(f"    [Tipo={tipo}] {titulo} — ignorada (tipo não é técnico)")
         dados.status = "ignorada"
         return dados
 
-    dados.tecnico              = tecnico
+    # Ignora se Tipo está vazio (sem técnico atribuído)
+    if not tipo.strip():
+        print(f"    [Tipo vazio] {titulo} — ignorada")
+        dados.status = "ignorada"
+        return dados
+
+    dados.tecnico              = tipo
     dados.numero_processo      = ler_numero_processo(page)
     dados.data_visita, dados.hora_visita = ler_data_visita(page)
     dados.trabalhos_realizados = ler_trabalhos_realizados(page)
