@@ -627,10 +627,21 @@ def main() -> None:
     parser.add_argument("--hoje",      action="store_true", help="Processa hoje (padrão: ontem)")
     parser.add_argument("--so-awo",    action="store_true", help="Apenas fase AWO, sem Worten")
     parser.add_argument("--debug",     action="store_true", help="Mostra eventos e sai")
-    parser.add_argument("--scan-form", metavar="URL",       help="Diagnóstico de formulário AWO")
+    parser.add_argument("--scan-form", metavar="URL",        help="Diagnóstico de formulário AWO")
+    parser.add_argument("--data",      metavar="DD/MM/YYYY", help="Data a processar (ex: 02/06/2026)")
     args = parser.parse_args()
 
-    alvo  = date.today() if args.hoje else date.today() - timedelta(days=1)
+    if args.data:
+        try:
+            d, m, a = args.data.split("/")
+            alvo = date(int(a), int(m), int(d))
+        except Exception:
+            print("Formato de data inválido. Use DD/MM/YYYY  ex: --data 02/06/2026")
+            sys.exit(1)
+    elif args.hoje:
+        alvo = date.today()
+    else:
+        alvo = date.today() - timedelta(days=1)
     label = alvo.strftime("%d/%m/%Y")
     modo  = "DRY RUN" if args.dry_run else ("FECHO AWO" if args.so_awo else "FECHO AWO + WORTEN")
 
