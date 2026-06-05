@@ -159,9 +159,6 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
         return True  # Sem alerta de check-in falhado — continua normalmente
 
     # ── Passo 1: Seleccionar "Sim, efetuei a visita" ──
-    page.screenshot(path="debug_checkin_1_antes_radio.png")
-
-    # Tenta primeiro com Playwright nativo (mais fiável com React)
     selecionou = False
     for sel in [
         'text="Sim, efetuei a visita"',
@@ -178,99 +175,115 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
             continue
 
     if not selecionou:
-        # Fallback: JavaScript varre todos os elementos
-        resultado = page.evaluate("""
+        page.evaluate("""
             () => {
                 const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-                if (radios.length > 0) { radios[0].click(); return 'radio-input'; }
+                if (radios.length > 0) { radios[0].click(); return; }
                 for (const el of document.querySelectorAll('label, span, div, button, li, p')) {
                     const txt = el.textContent.trim();
-                    if (txt === 'Sim, efetuei a visita' || txt.startsWith('Sim,') || txt === 'Sim') {
-                        el.click();
-                        return 'js:' + txt;
+                    if (txt === 'Sim, efetuei a visita' || txt.startsWith('Sim,')) {
+                        el.click(); return;
                     }
                 }
-                return 'nao-encontrado';
             }
         """)
-        print(f"    Radio (JS fallback): {resultado}")
 
-    time.sleep(1.5)  # Aguarda campos adicionais aparecerem
+    time.sleep(1.5)
 
-    # ── Passo 2: Preencher data da visita ──
-    page.screenshot(path="debug_checkin_2_apos_radio.png")
+    # ── Passo 2: Selecionar data e hora (modal com slots) ──
+    # Após clicar no radio aparece um seletor de data/hora — clicar nele abre o modal
+    try:
+        page.click(
+            'button:has-text("Selecionar data"), button:has-text("data e hora"), '
+            '[placeholder*="data" i], input[readonly]',
+            timeout=4000,
+        )
+        time.sleep(1)
+    except Exception:
+        pass  # Pode abrir automaticamente
+
+    # Selecionar o dia correcto no modal (círculos com número do dia)
     if data_visita:
-        parts = data_visita.split("/")
-        if len(parts) == 3:
-            iso = f"{parts[2]}-{parts[1]}-{parts[0]}"
-            # Tenta input[type="date"] e input[type="datetime-local"]
-            for sel in ['input[type="date"]', 'input[type="datetime-local"]']:
-                try:
-                    campo = page.locator(sel).first
-                    campo.fill(iso)
-                    campo.dispatch_event("change")
-                    time.sleep(0.5)
-                    print(f"    Data preenchida: {iso}")
-                    break
-                except Exception:
-                    continue
+        partes = data_visita.split("/")
+        if len(partes) == 3:
+            dia = str(int(partes[0]))  # Remove zero à esquerda: "03" → "3"
+            try:
+                page.locator(f'button:has-text("{dia}"), span:has-text("{dia}")').first.click(timeout=3000)
+                time.sleep(0.5)
+                print(f"    Dia seleccionado: {dia}")
+            except Exception:
+                pass
 
-    # ── Passo 3: Preencher hora (vem do AWO) ──
+    # Selecionar o slot de hora (ex: "10:00 - 12:00")
+    # Usa a hora do AWO para encontrar o slot mais próximo
     if _hora_visita:
+        hora_int = int(_hora_visita.split(":")[0]) if ":" in _hora_visita else 0
         try:
-            hora_field = page.locator('input[type="time"]').first
-            hora_field.fill(_hora_visita)
-            hora_field.dispatch_event("change")
-            time.sleep(0.4)
-            print(f"    Hora preenchida: {_hora_visita}")
+            # Tenta clicar no slot que contém a hora de início
+            slot_clicado = page.evaluate(f"""
+                () => {{
+                    const hora = {hora_int};
+                    const slots = Array.from(document.querySelectorAll('button'));
+                    for (const btn of slots) {{
+                        const txt = btn.textContent.trim();
+                        // Formato: "10:00 - 12:00"
+                        const m = txt.match(/^(\\d{{1,2}}):(\\d{{2}})\\s*-/);
+                        if (m && parseInt(m[1]) === hora) {{
+                            btn.click();
+                            return txt;
+                        }}
+                    }}
+                    return false;
+                }}
+            """)
+            if slot_clicado:
+                print(f"    Slot horário: {slot_clicado}")
+            time.sleep(0.5)
         except Exception:
             pass
 
-    # ── Passo 4: Seleccionar motivo "Atualizei o pedido ao final do dia" ──
-    # Pode ser select, input, textarea ou lista de opções clicáveis
-    motivo_preenchido = page.evaluate(f"""
-        () => {{
-            const texto = '{MOTIVO_CHECKIN}';
+    # Clicar SELECIONAR no modal
+    try:
+        page.click('button:has-text("SELECIONAR"), button:has-text("Selecionar")', timeout=4000)
+        time.sleep(1)
+        print("    Data e hora seleccionadas.")
+    except Exception:
+        pass  # Modal pode não existir em todos os processos
 
-            // Tenta select
-            for (const s of document.querySelectorAll('select')) {{
-                for (const o of s.options) {{
-                    if (o.text.toLowerCase().includes('atualizei') || o.text.toLowerCase().includes('final')) {{
-                        s.value = o.value;
-                        s.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return 'select:' + o.text;
-                    }}
-                }}
-            }}
+    # ── Passo 3: Motivo de falha de check-in (lista de radio buttons) ──
+    # Opção: "Atualizei o pedido ao final do dia"
+    motivo_ok = False
+    for sel in [
+        'text="Atualizei o pedido ao final do dia"',
+        ':text("Atualizei o pedido ao final do dia")',
+        'label:has-text("Atualizei o pedido ao final do dia")',
+    ]:
+        try:
+            page.locator(sel).first.click(timeout=3000, force=True)
+            motivo_ok = True
+            print("    Motivo seleccionado.")
+            break
+        except Exception:
+            continue
 
-            // Tenta li/div/span clicável com esse texto
-            for (const el of document.querySelectorAll('li, div[role="option"], span, button')) {{
-                if (el.textContent.trim().toLowerCase().includes('atualizei') ||
-                    el.textContent.trim().toLowerCase().includes('final do dia')) {{
-                    el.click();
-                    return 'opcao:' + el.textContent.trim();
-                }}
-            }}
+    if not motivo_ok:
+        page.evaluate("""
+            () => {
+                for (const el of document.querySelectorAll('label, span, div, li, p')) {
+                    if (el.textContent.trim().toLowerCase().includes('atualizei') ||
+                        el.textContent.trim().toLowerCase().includes('final do dia')) {
+                        el.click(); return;
+                    }
+                }
+                // Tenta radio input ao lado do label
+                const radios = document.querySelectorAll('input[type="radio"]');
+                if (radios.length >= 2) radios[1].click(); // Segundo radio = "Atualizei..."
+            }
+        """)
 
-            // Tenta textarea ou input de texto
-            for (const el of document.querySelectorAll('textarea, input[type="text"]')) {{
-                const lbl = el.labels ? Array.from(el.labels).map(l => l.textContent).join(' ').toLowerCase() : '';
-                if (lbl.includes('motivo') || lbl.includes('justif') || el.placeholder.toLowerCase().includes('motivo')) {{
-                    el.value = texto;
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return 'texto-livre';
-                }}
-            }}
-            return false;
-        }}
-    """)
-    print(f"    Motivo: {motivo_preenchido}")
-    time.sleep(1)
+    time.sleep(0.5)
 
-    page.screenshot(path="debug_checkin_3_antes_avancar.png")
-
-    # ── Passo 5: Clicar AVANÇAR ──
+    # ── Passo 4: Clicar AVANÇAR ──
     time.sleep(1)
     try:
         btn = page.locator('button:has-text("AVANÇAR"), button:has-text("Avançar")').first
@@ -279,7 +292,7 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
         print("    AVANÇAR clicado.")
     except Exception as e:
         print(f"    AVISO: AVANÇAR não encontrado: {e}")
-        page.screenshot(path="debug_checkin_4_avancar_falhou.png")
+        page.screenshot(path="debug_avancar_falhou.png")
         return False
 
     return True
@@ -324,6 +337,94 @@ def atualizar_e_concluir(page: Page) -> bool:
 
 
 # ──────────────────────────────────────────────
+# Auxiliares de preenchimento de formulário
+# ──────────────────────────────────────────────
+
+def _select_opcao(page: Page, label_txt: str, valor: str) -> None:
+    """Selecciona uma opção num dropdown próximo de um label com label_txt."""
+    result = page.evaluate(f"""
+        () => {{
+            const label = '{label_txt.lower()}';
+            const valor = '{valor.lower()}';
+            // Encontra o select mais próximo do label
+            for (const el of document.querySelectorAll('label, th, td, div, span, p')) {{
+                if (!el.textContent.trim().toLowerCase().includes(label)) continue;
+                // Procura select no mesmo container
+                const container = el.closest('div, tr, section') || el.parentElement;
+                const sel = container ? container.querySelector('select') : null;
+                if (!sel) continue;
+                for (const o of sel.options) {{
+                    if (o.text.toLowerCase().includes(valor) || o.value.toLowerCase().includes(valor)) {{
+                        sel.value = o.value;
+                        sel.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        return o.text;
+                    }}
+                }}
+            }}
+            return false;
+        }}
+    """)
+    if result:
+        print(f"    {label_txt}: {result}")
+
+
+def _preencher_textarea_apos_label(page: Page, label_txt: str, valor: str) -> None:
+    """Preenche o textarea mais próximo de um label com label_txt."""
+    preenchido = page.evaluate(f"""
+        () => {{
+            const label = '{label_txt.lower()}';
+            for (const el of document.querySelectorAll('label, p, span, div, h3, h4')) {{
+                if (!el.textContent.trim().toLowerCase().includes(label)) continue;
+                const container = el.closest('div, section') || el.parentElement;
+                const ta = container ? container.querySelector('textarea') : null;
+                if (ta) {{
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                    setter.call(ta, {repr(valor)});
+                    ta.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    ta.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    return true;
+                }}
+            }}
+            // Fallback: primeiro textarea visível
+            const tas = document.querySelectorAll('textarea');
+            if (tas.length) {{
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(tas[0], {repr(valor)});
+                tas[0].dispatchEvent(new Event('input', {{bubbles: true}}));
+                return 'fallback';
+            }}
+            return false;
+        }}
+    """)
+    if preenchido:
+        print(f"    Textarea '{label_txt}' preenchida.")
+
+
+def _clicar_botao_junto_label(page: Page, label_txt: str, botao_txt: str) -> None:
+    """Clica num botão com botao_txt (Sim/Não) junto de um label com label_txt."""
+    clicou = page.evaluate(f"""
+        () => {{
+            const label = '{label_txt.lower()}';
+            const botao = '{botao_txt.lower()}';
+            for (const el of document.querySelectorAll('label, p, span, div, h3, h4')) {{
+                if (!el.textContent.trim().toLowerCase().includes(label)) continue;
+                const container = el.closest('div, section, tr') || el.parentElement;
+                if (!container) continue;
+                for (const btn of container.querySelectorAll('button')) {{
+                    if (btn.textContent.trim().toLowerCase() === botao) {{
+                        btn.click();
+                        return true;
+                    }}
+                }}
+            }}
+            return false;
+        }}
+    """)
+    if clicou:
+        print(f"    '{label_txt}' → {botao_txt}")
+
+
+# ──────────────────────────────────────────────
 # Preencher relatório
 # ──────────────────────────────────────────────
 
@@ -338,74 +439,29 @@ def preencher_relatorio(page: Page, trabalhos: str, fotos: list) -> bool:
         print(f"    AVISO: PREENCHER RELATÓRIO não encontrado: {e}")
         return False
 
-    # Resultado da Instalação
-    try:
-        page.select_option(
-            'select[name*="resultado" i], select[name*="result" i]',
-            label=RESULTADO_INST,
-            timeout=3000,
-        )
-    except Exception:
-        try:
-            page.click(f'option:has-text("{RESULTADO_INST}")', timeout=3000)
-        except Exception:
-            pass
+    # ── Resultado da Instalação (dropdown) ──
+    _select_opcao(page, "Resultado da Instalação", RESULTADO_INST)
 
-    # Detalhe
-    for sel in ['input[name*="detalhe" i]', 'textarea[name*="detalhe" i]']:
-        try:
-            page.locator(sel).first.fill(DETALHE_INST)
-            break
-        except Exception:
-            continue
+    # ── Detalhe Complementar (dropdown) ──
+    _select_opcao(page, "Detalhe Complementar", "[IR] Equipamento e Instalação com sucesso")
 
-    # Justifique o fecho → Trabalhos Realizados
-    preenchido = False
-    for sel in [
-        'textarea[name*="justif" i]',
-        'textarea[name*="descr" i]',
-        'textarea[name*="observ" i]',
-        'textarea[name*="trabalho" i]',
-    ]:
-        try:
-            page.locator(sel).first.fill(trabalhos)
-            preenchido = True
-            break
-        except Exception:
-            continue
+    # ── Justifique o resultado → Trabalhos Realizados do AWO ──
+    _preencher_textarea_apos_label(page, "Justifique", trabalhos)
 
-    if not preenchido:
-        try:
-            page.locator("textarea").first.fill(trabalhos)
-        except Exception:
-            pass
+    # ── Realizou visita? → Sim (botão toggle) ──
+    _clicar_botao_junto_label(page, "Realizou visita", "Sim")
 
-    # Realizou Visita → SIM (radio/select)
-    try:
-        page.locator('input[type="radio"][value*="sim" i]').first.click(timeout=2000)
-    except Exception:
-        pass
+    # ── Houve orçamento extra? → Não (botão toggle) ──
+    _clicar_botao_junto_label(page, "orçamento extra", "Não")
 
-    # Orçamento Extra → NÃO
-    try:
-        page.locator('input[type="radio"][value*="nao" i], input[type="radio"][value*="não" i]').nth(0).click(timeout=2000)
-    except Exception:
-        pass
+    # ── Recolher equipamento? → Não (botão toggle) ──
+    _clicar_botao_junto_label(page, "recolher", "Não")
 
-    # Recolher Equipamento → NÃO
-    try:
-        page.locator('input[type="radio"][value*="nao" i], input[type="radio"][value*="não" i]').nth(1).click(timeout=2000)
-    except Exception:
-        pass
+    # ── Localização → Na morada do Cliente (dropdown) ──
+    _select_opcao(page, "Localização", LOCALIZACAO)
 
-    # Localização
-    try:
-        page.select_option('select[name*="local" i]', label=LOCALIZACAO, timeout=3000)
-    except Exception:
-        pass
-
-    # Upload fotos
-    fotos_existentes = [str(f) for f in fotos if Path(f).exists()]
+    # ── Anexar fotografias ──
+    fotos_existentes = [str(f) for f in (fotos or []) if Path(f).exists()]
     if fotos_existentes:
         try:
             page.locator('input[type="file"]').first.set_input_files(fotos_existentes)
@@ -414,13 +470,14 @@ def preencher_relatorio(page: Page, trabalhos: str, fotos: list) -> bool:
         except Exception as e:
             print(f"    AVISO: upload fotos falhou: {e}")
 
-    # Enviar relatório
+    # ── Enviar Relatório ──
     try:
         page.click(
             'button:has-text("ENVIAR RELATÓRIO"), button:has-text("Enviar Relatório")',
             timeout=5000,
         )
         time.sleep(2)
+        print("    Relatório enviado.")
     except Exception as e:
         print(f"    AVISO: ENVIAR RELATÓRIO não encontrado: {e}")
         return False
@@ -535,20 +592,30 @@ def enviar_mensagem_cliente(page: Page) -> bool:
         return True  # Não crítico
 
     try:
-        page.locator("textarea").first.fill(MSG_CLIENTE)
+        ta = page.locator("textarea").first
+        ta.fill(MSG_CLIENTE)
         time.sleep(0.5)
     except Exception:
         pass
 
-    try:
-        page.click('button:has-text("Enviar"), button[type="submit"]', timeout=5000)
-        time.sleep(1)
-        print("    Mensagem ao cliente enviada.")
-    except Exception as e:
-        print(f"    AVISO: enviar mensagem falhou: {e}")
-        return False
+    # O botão de envio é uma seta → tenta vários selectores
+    for sel in [
+        'button[type="submit"]',
+        'button:has-text("Enviar")',
+        'button[aria-label*="enviar" i]',
+        'button svg',           # botão com ícone de seta
+        'form button',
+    ]:
+        try:
+            page.locator(sel).last.click(timeout=3000)
+            time.sleep(1)
+            print("    Mensagem ao cliente enviada.")
+            return True
+        except Exception:
+            continue
 
-    return True
+    print("    AVISO: botão enviar mensagem não encontrado")
+    return False
 
 
 # ──────────────────────────────────────────────
