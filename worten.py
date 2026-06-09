@@ -209,13 +209,15 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
                 dia = str(int(partes[0]))  # "03" → "3"
                 clicou_dia = page.evaluate(f"""
                     () => {{
-                        const dia = '{dia}';
-                        // Os dias são botões com o número e abreviatura (ex: "Qua\\n03")
+                        const diaAlvo = {int(partes[0])};  // número inteiro ex: 8
                         for (const btn of document.querySelectorAll('button')) {{
                             const txt = btn.textContent.trim();
-                            // Último número no texto do botão = dia
-                            const m = txt.match(/(\\d{{1,2}})\\s*$/);
-                            if (m && m[1] === dia) {{
+                            // Extrai todos os números do texto do botão
+                            const nums = txt.match(/\\d{{1,2}}/g);
+                            if (!nums) continue;
+                            // O dia é o último número (depois da abreviatura)
+                            const ultimo = parseInt(nums[nums.length - 1]);
+                            if (ultimo === diaAlvo) {{
                                 btn.click();
                                 return txt;
                             }}
