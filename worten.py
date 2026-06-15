@@ -148,6 +148,8 @@ def pesquisar_processo(page: Page, numero: str) -> bool:
 # ──────────────────────────────────────────────
 
 def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> bool:
+    print(f"    [debug] data_visita recebida: '{data_visita}'  hora_visita recebida: '{_hora_visita}'")
+
     # O botão JUSTIFICAR só aparece quando há check-in falhado
     try:
         page.click(
@@ -206,22 +208,38 @@ def justificar_checkin(page: Page, data_visita: str, _hora_visita: str = "") -> 
         if data_visita:
             partes = data_visita.split("/")
             if len(partes) == 3:
-                dia = str(int(partes[0]))  # "03" → "3"
+                dia_alvo = int(partes[0])  # "12" → 12
+                print(f"    [debug] a procurar botão do dia {dia_alvo}")
                 clicou_dia = page.evaluate(f"""
                     () => {{
-                        const diaAlvo = {int(partes[0])};  // número inteiro ex: 8
+                        const diaAlvo = {dia_alvo};
+                        const diasSemana = /(seg|ter|qua|qui|sex|s[áa]b|dom)/i;
+
+                        // 1) Prioriza botões que tenham abreviatura do dia da semana
+                        //    (evita confundir com botões de horário, ex: "11:00 - 13:00")
                         for (const btn of document.querySelectorAll('button')) {{
                             const txt = btn.textContent.trim();
-                            // Extrai todos os números do texto do botão
+                            if (!diasSemana.test(txt)) continue;
                             const nums = txt.match(/\\d{{1,2}}/g);
                             if (!nums) continue;
-                            // O dia é o último número (depois da abreviatura)
                             const ultimo = parseInt(nums[nums.length - 1]);
                             if (ultimo === diaAlvo) {{
                                 btn.click();
                                 return txt;
                             }}
                         }}
+
+                        // 2) Fallback: botão cujo texto é APENAS o número do dia
+                        //    (sem ':' para não confundir com horários)
+                        for (const btn of document.querySelectorAll('button')) {{
+                            const txt = btn.textContent.trim();
+                            if (txt.includes(':')) continue;
+                            if (/^\\d{{1,2}}$/.test(txt) && parseInt(txt) === diaAlvo) {{
+                                btn.click();
+                                return txt;
+                            }}
+                        }}
+
                         return false;
                     }}
                 """)
