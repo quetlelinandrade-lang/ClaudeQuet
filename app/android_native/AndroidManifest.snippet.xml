@@ -1,0 +1,26 @@
+<!--
+  Adicione ao android/app/src/main/AndroidManifest.xml gerado pelo flutter create.
+
+  1) A permissão abaixo vai DENTRO da tag <manifest>, ANTES de <application>.
+     Note o `tools:ignore` e o namespace tools no <manifest>:
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+                  xmlns:tools="http://schemas.android.com/tools">
+-->
+<uses-permission
+    android:name="android.permission.PACKAGE_USAGE_STATS"
+    tools:ignore="ProtectedPermissions" />
+
+<!--
+  2) Para o app conseguir resolver o NOME dos outros apps (getApplicationLabel)
+     no Android 11+ (queries de pacotes restritas), adicione também dentro de
+     <manifest> o bloco <queries>:
+
+        <queries>
+            <intent>
+                <action android:name="android.intent.action.MAIN" />
+            </intent>
+        </queries>
+
+  Nada precisa mudar dentro de <application> — a MainActivity padrão do Flutter
+  já é usada (você só troca o conteúdo do MainActivity.kt).
+-->
