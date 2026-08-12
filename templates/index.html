@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leitura de Códigos de Chegada</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>📦 Leitura de Códigos de Chegada</h1>
+    <p class="sub">OCR / Visão — etiquetas de envio, códigos de barras, QR codes e numerações</p>
+  </header>
+
+  <main>
+    <section class="painel" id="painel-entrada">
+      <div id="dropzone" class="dropzone">
+        <input type="file" id="input-ficheiro" accept="image/*" hidden />
+        <input type="file" id="input-camera" accept="image/*" capture="environment" hidden />
+        <div class="dropzone-conteudo">
+          <div class="icone">🖼️</div>
+          <p><strong>Arrasta uma imagem</strong> ou</p>
+          <div class="botoes">
+            <button type="button" id="btn-escolher">Escolher ficheiro</button>
+            <button type="button" id="btn-camera">Tirar foto</button>
+          </div>
+          <p class="dica">JPEG, PNG, GIF ou WEBP · máx. 10 MB</p>
+        </div>
+      </div>
+
+      <div id="previa" class="previa oculto">
+        <img id="img-previa" alt="Pré-visualização" />
+        <div class="acoes">
+          <button type="button" id="btn-analisar" class="primario">Analisar imagem</button>
+          <button type="button" id="btn-limpar">Trocar imagem</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="painel" id="painel-resultado">
+      <div class="cabecalho-resultado">
+        <h2>Resultado (JSON)</h2>
+        <button type="button" id="btn-copiar" disabled>Copiar JSON</button>
+      </div>
+      <div id="estado" class="estado"></div>
+      <div id="resumo" class="resumo oculto"></div>
+      <pre id="saida" class="saida">Aguardando imagem…</pre>
+    </section>
+  </main>
+
+  <footer>
+    <p>Campos ilegíveis são devolvidos como <code>null</code>. Nenhum dado é inventado.</p>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
